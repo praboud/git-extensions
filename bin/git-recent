@@ -24,6 +24,7 @@ class Path:
         self.path = os.path.relpath(path, repo.workdir)
         self.split = split_path(self.path)
         self.mod_date = None
+        self.mod_commit = None
         self.current_hex = None
 
     def insert_into_file_tree(self, d):
@@ -43,6 +44,14 @@ class Path:
             self.path,
             self.mod_date,
         )
+
+    def __lt__(self, other):
+        if self.mod_date is None:
+            return True
+        elif other.mod_date is None:
+            return False
+        else:
+            return self.mod_date < other.mod_date
 
 
 def walk_file_tree(file_tree, git_tree, function):
@@ -94,6 +103,8 @@ if __name__ == '__main__':
                 return True
 
         file_tree = walk_file_tree(file_tree, revision.tree, check_for_changes)
+
+    paths.sort(reverse=True)
 
     for p in paths:
         print p
