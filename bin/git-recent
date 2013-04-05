@@ -1,6 +1,8 @@
 #!/usr/bin/env python2
 
+import colorama
 import datetime
+import itertools
 import os.path
 import pygit2
 
@@ -16,11 +18,55 @@ def split_path(path):
     return lst
 
 
+def print_table(rows, colsep='  '):
+    '''
+    Takes a list of lists of text (rows=[columns]=[[strings]]),
+    and prints out the table so that each string is aligned with the other
+    strings in its column.
+    Each `text` may either be a string, or a two-tuple of a string and color
+    string from colorama. This is done so the color string is not counted
+    in the column width.
+    '''
+
+    def get_width(text):
+        if isinstance(text, str):
+            return len(text)
+        else:
+            return len(text[0])
+
+    # width of each column
+    widths = [max(map(get_width, col))
+              for col in zip(*rows)]
+
+    def justify_and_colourize(text, width):
+        if isinstance(text, str):
+            string = text
+            start_colour = ''
+            end_colour = ''
+        else:
+            string = text[0]
+            start_colour = text[1]
+            end_colour = colorama.Fore.RESET
+        return "{start_colour}{text:{width}}{end_colour}".format(
+            text=string,
+            width=width,
+            start_colour=start_colour,
+            end_colour=end_colour,
+        )
+
+    # print each row, columns seperated by colsep, each column at the
+    # appropriate width
+    for r in rows:
+        print colsep.join([justify_and_colourize(text, width)
+                          for text, width in itertools.izip(r, widths)])
+
+
 class Path:
     '''
     Represents a path (file or folder) under source control
     '''
     def __init__(self, path, repo):
+        self.relpath = path
         self.path = os.path.relpath(path, repo.workdir)
         self.split = split_path(self.path)
         self.mod_date = None
@@ -39,11 +85,15 @@ class Path:
                 d = t
         d[self.split[-1]] = self
 
-    def __str__(self):
-        return "{} last modified on {}".format(
-            self.path,
-            self.mod_date,
-        )
+    def cols(self):
+        columns = []
+        if self.current_hex is None:
+            columns.append((self.relpath, colorama.Fore.GREEN))
+            columns.append('not tracked')
+        else:
+            columns.append((self.relpath, colorama.Fore.RED))
+            columns.append(str(self.mod_date))
+        return columns
 
     def __lt__(self, other):
         if self.mod_date is None:
@@ -71,6 +121,7 @@ def walk_file_tree(file_tree, git_tree, function):
                 new_file_tree[path_segment] = file_tree[path_segment]
     return new_file_tree
 
+
 if __name__ == '__main__':
     repo = pygit2.Repository(pygit2.discover_repository('.'))
     file_tree = dict()
@@ -96,7 +147,9 @@ if __name__ == '__main__':
     for revision in repo.walk(repo.head.hex, pygit2.GIT_SORT_TIME):
         def check_for_changes(path, obj):
             if obj is not None and path.current_hex == obj.hex:
-                path.mod_date = datetime.datetime.fromtimestamp(revision.commit_time)
+                path.mod_date = datetime.datetime.fromtimestamp(
+                    revision.commit_time
+                )
                 path.mod_commit = revision.hex
                 return False
             else:
@@ -106,5 +159,5 @@ if __name__ == '__main__':
 
     paths.sort(reverse=True)
 
-    for p in paths:
-        print p
+    output_rows = [p.cols() for p in paths]
+    print_table(output_rows)
