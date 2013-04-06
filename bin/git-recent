@@ -124,6 +124,23 @@ class Path:
                 columns.append(str(self.mod_commit))
         return columns
 
+    def set_initial_obj(self, current_obj):
+        if current_obj is None:
+            return True
+        else:
+            self.current_hex = current_obj.hex
+            return False
+
+    def compare_past_obj(self, past_obj, commit):
+        if past_obj is not None and self.current_hex == past_obj.hex:
+            self.mod_date = datetime.datetime.fromtimestamp(
+                commit.commit_time
+            )
+            self.mod_commit = commit.hex
+            return False
+        else:
+            return True
+
     def __lt__(self, other):
         if self.mod_date is None:
             return True
@@ -167,31 +184,28 @@ if __name__ == '__main__':
     listing = args.files or os.listdir(os.getcwd())
     paths = [Path(path, repo) for path in listing]
 
+    # construct file tree
+    # a dictionary mapping a string (file path) to a Path object (a file)
+    # or a mapping to another such dictionary (a subdirectory)
     for p in paths:
         p.insert_into_file_tree(file_tree)
 
-    def set_initial(path, obj):
-        if obj is None:
-            return True
-        else:
-            path.current_hex = obj.hex
-            return False
+    # for each object in file tree, find the hex of that obj at this commit
+    file_tree = walk_file_tree(
+        file_tree,
+        repo.head.tree,
+        lambda p, obj: p.set_initial_obj(obj),
+    )
 
-    file_tree = walk_file_tree(file_tree, repo.head.tree, set_initial)
-
+    # for each object in file tree, find when it was last modified
     for revision in repo.walk(repo.head.hex, pygit2.GIT_SORT_TIME):
-        def check_for_changes(path, obj):
-            if obj is not None and path.current_hex == obj.hex:
-                path.mod_date = datetime.datetime.fromtimestamp(
-                    revision.commit_time
-                )
-                path.mod_commit = revision.hex
-                return False
-            else:
-                return True
+        file_tree = walk_file_tree(
+            file_tree,
+            revision.tree,
+            lambda p, obj: p.compare_past_obj(obj, revision),
+        )
 
-        file_tree = walk_file_tree(file_tree, revision.tree, check_for_changes)
-
+    # output to console
     paths.sort(reverse=True)
 
     output_rows = [p.cols() for p in paths]
