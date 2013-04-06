@@ -121,7 +121,7 @@ class Path:
             columns.append((self.relpath, colorama.Fore.GREEN))
             columns.append(str(self.mod_date))
             if args.show_commit:
-                columns.append(str(self.mod_commit))
+                columns.append(str(self.mod_commit.hex))
         return columns
 
     def set_initial_obj(self, current_obj):
@@ -136,10 +136,31 @@ class Path:
             self.mod_date = datetime.datetime.fromtimestamp(
                 commit.commit_time
             )
-            self.mod_commit = commit.hex
+            self.mod_commit = commit
             return False
         else:
             return True
+
+    def ignore_pre_init(self):
+        # after creation of object,
+        # check if we want to investigate this object
+        # all we have at this point is object name
+        return False
+
+    def ignore_post_init(self):
+        # after finding the current status of the object in git history,
+        # check if we want to investigate this object
+        # at this point, we have the object's current_hex
+        if args.hide_untracked and self.current_hex is None:
+            return True
+        else:
+            return False
+
+    def ignore_post_hist(self):
+        # after finding the history of the object,
+        # check if we want to report about this object
+        # at this point, we have the commit this object was last modified by
+        return False
 
     def __lt__(self, other):
         if self.mod_date is None:
@@ -175,7 +196,10 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('files', metavar='files', nargs='*')
-    parser.add_argument('--commit', dest='show_commit', action='store_true')
+    parser.add_argument('-c', '--commit', dest='show_commit',
+                        action='store_true')
+    parser.add_argument('-u', '--hide-untracked', dest='hide_untracked',
+                        action='store_true')
     args = parser.parse_args()
 
     repo = pygit2.Repository(pygit2.discover_repository('.'))
@@ -183,6 +207,8 @@ if __name__ == '__main__':
     file_tree = dict()
     listing = args.files or os.listdir(os.getcwd())
     paths = [Path(path, repo) for path in listing]
+
+    paths = filter(lambda p: not p.ignore_pre_init(), paths)
 
     # construct file tree
     # a dictionary mapping a string (file path) to a Path object (a file)
@@ -197,6 +223,8 @@ if __name__ == '__main__':
         lambda p, obj: p.set_initial_obj(obj),
     )
 
+    paths = filter(lambda p: not p.ignore_post_init(), paths)
+
     # for each object in file tree, find when it was last modified
     for revision in repo.walk(repo.head.hex, pygit2.GIT_SORT_TIME):
         file_tree = walk_file_tree(
@@ -207,6 +235,8 @@ if __name__ == '__main__':
 
     # output to console
     paths.sort(reverse=True)
+
+    paths = filter(lambda p: not p.ignore_post_hist(), paths)
 
     output_rows = [p.cols() for p in paths]
     print_table(output_rows)
