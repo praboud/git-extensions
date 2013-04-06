@@ -108,10 +108,10 @@ class Path:
     def cols(self):
         columns = []
         if self.current_hex is None:
-            columns.append((self.relpath, colorama.Fore.GREEN))
+            columns.append((self.relpath, colorama.Fore.RED))
             columns.append('not tracked')
         else:
-            columns.append((self.relpath, colorama.Fore.RED))
+            columns.append((self.relpath, colorama.Fore.GREEN))
             columns.append(str(self.mod_date))
         return columns
 
@@ -130,12 +130,12 @@ def walk_file_tree(file_tree, git_tree, function):
         if git_tree is None:
             subtree = None
         elif path_segment in git_tree:
-            subtree = git_tree[path_segment]
+            subtree = git_tree[path_segment].to_object()
         else:
             subtree = None
 
         if isinstance(path, dict):
-            new_file_tree[path_segment] = walk_file_tree(path, subtree)
+            new_file_tree[path_segment] = walk_file_tree(path, subtree, function)
         else:
             if not function(path, subtree):
                 new_file_tree[path_segment] = file_tree[path_segment]
@@ -160,9 +160,6 @@ if __name__ == '__main__':
             return False
 
     file_tree = walk_file_tree(file_tree, repo.head.tree, set_initial)
-
-    #for p in paths:
-    #    print p.path, p.current_hex, p.mod_date
 
     for revision in repo.walk(repo.head.hex, pygit2.GIT_SORT_TIME):
         def check_for_changes(path, obj):
