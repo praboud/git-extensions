@@ -20,6 +20,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 '''
 
+import argparse
 import colorama
 import datetime
 import itertools
@@ -143,10 +144,17 @@ def walk_file_tree(file_tree, git_tree, function):
 
 
 if __name__ == '__main__':
+    description = ('Do a directory listing ordered by last modification date '
+                   'by a commit')
+
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument('files', metavar='files', nargs='*')
+    args = parser.parse_args()
+
     repo = pygit2.Repository(pygit2.discover_repository('.'))
+
     file_tree = dict()
-    listing = os.listdir(os.getcwd())
-    #listing = ['git-pivotal']
+    listing = args.files or os.listdir(os.getcwd())
     paths = [Path(path, repo) for path in listing]
 
     for p in paths:
