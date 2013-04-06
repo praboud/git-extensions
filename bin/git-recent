@@ -28,6 +28,10 @@ import os.path
 import pygit2
 
 
+# global var containing arguments (including formatting options)
+args = None
+
+
 def split_path(path):
     lst = []
     path = path.rstrip('/')
@@ -57,7 +61,7 @@ def print_table(rows, colsep='  '):
 
     # width of each column
     widths = [max(map(get_width, col))
-              for col in zip(*rows)]
+              for col in itertools.izip_longest(*rows, fillvalue='')]
 
     def justify_and_colourize(text, width):
         if isinstance(text, str):
@@ -78,8 +82,10 @@ def print_table(rows, colsep='  '):
     # print each row, columns seperated by colsep, each column at the
     # appropriate width
     for r in rows:
-        print colsep.join([justify_and_colourize(text, width)
-                          for text, width in itertools.izip(r, widths)])
+        cols = [justify_and_colourize(text, width)
+                for text, width
+                in itertools.izip_longest(r, widths, fillvalue='')]
+        print colsep.join(cols)
 
 
 class Path:
@@ -114,6 +120,8 @@ class Path:
         else:
             columns.append((self.relpath, colorama.Fore.GREEN))
             columns.append(str(self.mod_date))
+            if args.show_commit:
+                columns.append(str(self.mod_commit))
         return columns
 
     def __lt__(self, other):
@@ -136,7 +144,8 @@ def walk_file_tree(file_tree, git_tree, function):
             subtree = None
 
         if isinstance(path, dict):
-            new_file_tree[path_segment] = walk_file_tree(path, subtree, function)
+            new_file_tree[path_segment] = \
+                walk_file_tree(path, subtree, function)
         else:
             if not function(path, subtree):
                 new_file_tree[path_segment] = file_tree[path_segment]
@@ -149,6 +158,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument('files', metavar='files', nargs='*')
+    parser.add_argument('--commit', dest='show_commit', action='store_true')
     args = parser.parse_args()
 
     repo = pygit2.Repository(pygit2.discover_repository('.'))
