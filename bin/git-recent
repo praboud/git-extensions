@@ -101,7 +101,7 @@ class Path:
         self.path = os.path.relpath(path, repo.workdir)
 
         self.mod_commit = None
-        self.current_hex = None
+        self.current_obj = None
 
     def insert_into_file_tree(self, d):
         split = split_path(self.path)
@@ -118,7 +118,7 @@ class Path:
 
     def cols(self):
         columns = []
-        if self.current_hex is None:
+        if self.current_obj is None:
             columns.append((self.relpath, colorama.Fore.RED))
             columns.append('not tracked')
         else:
@@ -132,16 +132,48 @@ class Path:
         if current_obj is None:
             return True
         else:
-            self.current_hex = current_obj.hex
+            self.current_obj = current_obj
             self.mod_commit = commit
+
+            self.candidates_for_comparison = set()
+            self.candidates_for_comparison.add(commit.hex)
             return False
 
     def compare_past_obj(self, past_obj, commit):
-        if past_obj is not None and self.current_hex == past_obj.hex:
+        '''
+        This is called by walk_file_tree to look for the last change made to
+        the file. We are walking backwards in history, looking for the first
+        commit containing an instance of the file which is different from it's
+        present state. The child of that commit is the changing commit.
+        '''
+        assert self.current_obj
+
+        if not commit.hex in self.candidates_for_comparison:
+            return False
+        elif past_obj is not None and self.current_obj.hex == past_obj.hex:
+            # there are no differences in version of the file
+            # this may be the last commit where this is the case
+            # so, we queue up the parents of this commit to see if any
+            # of these commits have the file in the same state
+
+            # forget about any checking we are doing
+            self.candidates_for_comparison.clear()
+            # queue up checking for parent commits
+            self.candidates_for_comparison.update(
+                [c.hex for c in commit.parents]
+            )
+
+            # store this commit (in case this is the modifying commit)
             self.mod_commit = commit
             return False
         else:
-            return True
+            # file has been removed, or is different
+
+            # if there are no more places to look for the source of the change
+            # then the mod_commit is really the modifying commit
+            self.candidates_for_comparison.remove(commit.hex)
+            if len(self.candidates_for_comparison) == 0:
+                return True
 
     def ignore_pre_init(self):
         # after creation of object,
@@ -156,7 +188,7 @@ class Path:
         # after finding the current status of the object in git history,
         # check if we want to investigate this object
         # at this point, we have the object's current_hex
-        if args.hide_untracked and self.current_hex is None:
+        if args.hide_untracked and self.current_obj is None:
             return True
         else:
             return False
