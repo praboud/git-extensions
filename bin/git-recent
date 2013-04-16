@@ -26,7 +26,6 @@ import datetime
 import itertools
 import os.path
 import pygit2
-import subprocess
 
 
 # global var containing arguments (including formatting options)
@@ -214,6 +213,7 @@ class Path:
             else:
                 if args.author_date:
                     # use author date
+                    import subprocess
                     timestamp = int(subprocess.check_output(
                         ['git', 'show', '-s', '--format=%at', self.mod_commit.hex]
                     ))
