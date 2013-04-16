@@ -230,20 +230,37 @@ class Path:
 
 
 def walk_file_tree(file_tree, git_tree, function):
+    '''
+    Takes a file tree and a git tree object, and a function of type:
+        (Path, git_obj) -> Bool
+    Recursively traverse file tree and git tree simultaenously.
+    Apply function to all paths and tree_objects (paired).
+    Remove the path from the file tree if the function returns true.
+
+    This function minimizes the amount of traversing the file tree
+    required.
+    '''
     new_file_tree = dict()
     for path_segment, path in file_tree.iteritems():
         if git_tree is None:
-            subtree = None
+            git_obj = None
         elif path_segment in git_tree:
-            subtree = git_tree[path_segment].to_object()
+            git_obj = git_tree[path_segment]
         else:
-            subtree = None
+            git_obj = None
 
         if isinstance(path, dict):
-            new_file_tree[path_segment] = \
-                walk_file_tree(path, subtree, function)
+            if git_obj is not None:
+                # we only convert to object (presumably tree)
+                # if we are actually going to traverse this
+                # if we are only interested in the hex, we don't need
+                # to do the extra lookup
+                git_obj = git_obj.to_object()
+            new_sub_tree = walk_file_tree(path, git_obj, function)
+            if len(new_sub_tree) != 0:
+                new_file_tree[path_segment] = new_sub_tree
         else:
-            if not function(path, subtree):
+            if not function(path, git_obj):
                 new_file_tree[path_segment] = file_tree[path_segment]
     return new_file_tree
 
@@ -294,6 +311,10 @@ if __name__ == '__main__':
             revision.tree,
             lambda p, obj: p.compare_past_obj(obj, revision),
         )
+        if len(file_tree) == 0:
+            # then we are done finding mod dates, so stop walking
+            # history
+            break
 
     # output to console
     paths.sort(reverse=True)
