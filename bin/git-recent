@@ -103,18 +103,21 @@ class Path:
         self.mod_commit = None
         self.current_obj = None
 
-    def insert_into_file_tree(self, d):
+    def insert_into_file_tree(self, file_tree):
         split = split_path(self.path)
-        for p in split[:-1]:
-            if p in d:
-                d = d[p]
-                if not isinstance(d, dict):
-                    raise ValueError
+        for seg in split[:-1]:
+            for path, subtree in file_tree:
+                if seg == path:
+                    if not isinstance(subtree, list):
+                        raise ValueError
+                    else:
+                        file_tree = subtree
+                        break
             else:
-                t = dict()
-                d[p] = t
-                d = t
-        d[split[-1]] = self
+                t = []
+                file_tree.append((seg, t))
+                file_tree = t
+        file_tree.append((split[-1], self))
 
     def cols(self):
         columns = []
@@ -233,6 +236,14 @@ def walk_file_tree(file_tree, git_tree, function):
     '''
     Takes a file tree and a git tree object, and a function of type:
         (Path, git_obj) -> Bool
+
+    A file_tree represents the directory structure of the files upon
+    which we are operating.  More specifically, file_tree is a list of
+    tuples. Each tuple is of type:
+        - (str, Path); maps a file path to a Path object
+        - (str, file_tree); maps a file path to directory / file_tree
+    where str represents part of a file path.
+
     Recursively traverse file tree and git tree simultaenously.
     Apply function to all paths and tree_objects (paired).
     Remove the path from the file tree if the function returns true.
@@ -240,8 +251,10 @@ def walk_file_tree(file_tree, git_tree, function):
     This function minimizes the amount of traversing the file tree
     required.
     '''
-    new_file_tree = dict()
-    for path_segment, path in file_tree.iteritems():
+    i = 0
+    while i < len(file_tree):
+        path_segment, path = file_tree[i]
+
         if git_tree is None:
             git_obj = None
         elif path_segment in git_tree:
@@ -249,20 +262,22 @@ def walk_file_tree(file_tree, git_tree, function):
         else:
             git_obj = None
 
-        if isinstance(path, dict):
+        if isinstance(path, list):
             if git_obj is not None:
                 # we only convert to object (presumably tree)
                 # if we are actually going to traverse this
                 # if we are only interested in the hex, we don't need
                 # to do the extra lookup
                 git_obj = git_obj.to_object()
-            new_sub_tree = walk_file_tree(path, git_obj, function)
-            if len(new_sub_tree) != 0:
-                new_file_tree[path_segment] = new_sub_tree
+            walk_file_tree(path, git_obj, function)
+            remove = len(path) == 0
         else:
-            if not function(path, git_obj):
-                new_file_tree[path_segment] = file_tree[path_segment]
-    return new_file_tree
+            remove = function(path, git_obj)
+
+        if remove:
+            del file_tree[i]
+        else:
+            i += 1
 
 
 if __name__ == '__main__':
@@ -283,7 +298,7 @@ if __name__ == '__main__':
 
     repo = pygit2.Repository(pygit2.discover_repository('.'))
 
-    file_tree = dict()
+    file_tree = list()
     listing = args.files or os.listdir(os.getcwd())
     paths = [Path(path, repo) for path in listing]
 
@@ -295,8 +310,10 @@ if __name__ == '__main__':
     for p in paths:
         p.insert_into_file_tree(file_tree)
 
+    #print file_tree
+
     # for each object in file tree, find the hex of that obj at this commit
-    file_tree = walk_file_tree(
+    walk_file_tree(
         file_tree,
         repo.head.tree,
         lambda p, obj: p.set_initial_obj(obj, repo.head),
@@ -306,7 +323,7 @@ if __name__ == '__main__':
 
     # for each object in file tree, find when it was last modified
     for revision in repo.walk(repo.head.hex, pygit2.GIT_SORT_TIME):
-        file_tree = walk_file_tree(
+        walk_file_tree(
             file_tree,
             revision.tree,
             lambda p, obj: p.compare_past_obj(obj, revision),
