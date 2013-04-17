@@ -27,6 +27,8 @@ import itertools
 import os.path
 import pygit2
 
+import _gitext
+
 
 # global var containing arguments (including formatting options)
 args = None
@@ -280,7 +282,7 @@ def walk_file_tree(file_tree, git_tree, function):
             i += 1
 
 
-if __name__ == '__main__':
+def main():
     description = ('Do a directory listing ordered by last modification date '
                    'by a commit')
 
@@ -302,41 +304,14 @@ if __name__ == '__main__':
     listing = args.files or os.listdir(os.getcwd())
     paths = [Path(path, repo) for path in listing]
 
-    paths = filter(lambda p: not p.ignore_pre_init(), paths)
-
-    # construct file tree
-    # a dictionary mapping a string (file path) to a Path object (a file)
-    # or a mapping to another such dictionary (a subdirectory)
-    for p in paths:
-        p.insert_into_file_tree(file_tree)
-
-    #print file_tree
-
-    # for each object in file tree, find the hex of that obj at this commit
-    walk_file_tree(
-        file_tree,
-        repo.head.tree,
-        lambda p, obj: p.set_initial_obj(obj, repo.head),
-    )
-
-    paths = filter(lambda p: not p.ignore_post_init(), paths)
-
-    # for each object in file tree, find when it was last modified
-    for revision in repo.walk(repo.head.hex, pygit2.GIT_SORT_TIME):
-        walk_file_tree(
-            file_tree,
-            revision.tree,
-            lambda p, obj: p.compare_past_obj(obj, revision),
-        )
-        if len(file_tree) == 0:
-            # then we are done finding mod dates, so stop walking
-            # history
-            break
-
-    # output to console
-    paths.sort(reverse=True)
-
-    paths = filter(lambda p: not p.ignore_post_hist(), paths)
-
+    git_paths = [p.path for p in paths]
+    commits = _gitext.mod_commits(git_paths)
+    for p, c in zip(paths, commits):
+        print p.relpath, c
+        
+    
     output_rows = [p.cols() for p in paths]
     print_table(output_rows)
+
+if __name__ == '__main__':
+    main()
