@@ -21,9 +21,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 '''
 
 import argparse
-import colorama
-import datetime
-import itertools
+#import colorama
+#import datetime
+#import itertools
 import os.path
 import pygit2
 
@@ -31,255 +31,51 @@ import _gitext
 
 
 # global var containing arguments (including formatting options)
-args = None
 
 
-def split_path(path):
-    lst = []
-    path = path.rstrip('/')
-    (path, tail) = os.path.split(path)
-    while tail != '':
-        lst.append(tail)
-        (path, tail) = os.path.split(path)
-    lst.reverse()
-    return lst
+# def print_table(rows, colsep='  '):
+#     '''
+#     Takes a list of lists of text (rows=[columns]=[[strings]]),
+#     and prints out the table so that each string is aligned with the other
+#     strings in its column.
+#     Each `text` may either be a string, or a two-tuple of a string and color
+#     string from colorama. This is done so the color string is not counted
+#     in the column width.
+#     '''
 
+#     def get_width(text):
+#         if isinstance(text, str):
+#             return len(text)
+#         else:
+#             return len(text[0])
 
-def print_table(rows, colsep='  '):
-    '''
-    Takes a list of lists of text (rows=[columns]=[[strings]]),
-    and prints out the table so that each string is aligned with the other
-    strings in its column.
-    Each `text` may either be a string, or a two-tuple of a string and color
-    string from colorama. This is done so the color string is not counted
-    in the column width.
-    '''
+#     # width of each column
+#     widths = [max(map(get_width, col))
+#               for col in itertools.izip_longest(*rows, fillvalue='')]
 
-    def get_width(text):
-        if isinstance(text, str):
-            return len(text)
-        else:
-            return len(text[0])
+#     def justify_and_colourize(text, width):
+#         if isinstance(text, str):
+#             string = text
+#             start_colour = ''
+#             end_colour = ''
+#         else:
+#             string = text[0]
+#             start_colour = text[1]
+#             end_colour = colorama.Fore.RESET
+#         return "{start_colour}{text:{width}}{end_colour}".format(
+#             text=string,
+#             width=width,
+#             start_colour=start_colour,
+#             end_colour=end_colour,
+#         )
 
-    # width of each column
-    widths = [max(map(get_width, col))
-              for col in itertools.izip_longest(*rows, fillvalue='')]
-
-    def justify_and_colourize(text, width):
-        if isinstance(text, str):
-            string = text
-            start_colour = ''
-            end_colour = ''
-        else:
-            string = text[0]
-            start_colour = text[1]
-            end_colour = colorama.Fore.RESET
-        return "{start_colour}{text:{width}}{end_colour}".format(
-            text=string,
-            width=width,
-            start_colour=start_colour,
-            end_colour=end_colour,
-        )
-
-    # print each row, columns seperated by colsep, each column at the
-    # appropriate width
-    for r in rows:
-        cols = [justify_and_colourize(text, width)
-                for text, width
-                in itertools.izip_longest(r, widths, fillvalue='')]
-        print colsep.join(cols)
-
-
-class Path:
-    '''
-    Represents a path (file or folder) under source control
-    '''
-    def __init__(self, path, repo):
-        # path relative to current directory
-        self.relpath = path
-
-        # path relative to repo root
-        self.path = os.path.relpath(path, repo.workdir)
-
-        self.mod_commit = None
-        self.current_obj = None
-
-    def insert_into_file_tree(self, file_tree):
-        split = split_path(self.path)
-        for seg in split[:-1]:
-            for path, subtree in file_tree:
-                if seg == path:
-                    if not isinstance(subtree, list):
-                        raise ValueError
-                    else:
-                        file_tree = subtree
-                        break
-            else:
-                t = []
-                file_tree.append((seg, t))
-                file_tree = t
-        file_tree.append((split[-1], self))
-
-    def cols(self):
-        columns = []
-        if self.current_obj is None:
-            columns.append((self.relpath, colorama.Fore.RED))
-            columns.append('not tracked')
-        else:
-            columns.append((self.relpath, colorama.Fore.GREEN))
-            columns.append(str(self.mod_date))
-            if args.show_commit:
-                columns.append(str(self.mod_commit.hex))
-        return columns
-
-    def set_initial_obj(self, current_obj, commit):
-        if current_obj is None:
-            return True
-        else:
-            self.current_obj = current_obj
-            self.mod_commit = commit
-
-            self.candidates_for_comparison = set()
-            self.candidates_for_comparison.add(commit.hex)
-            return False
-
-    def compare_past_obj(self, past_obj, commit):
-        '''
-        This is called by walk_file_tree to look for the last change made to
-        the file. We are walking backwards in history, looking for the first
-        commit containing an instance of the file which is different from it's
-        present state. The child of that commit is the changing commit.
-        '''
-        assert self.current_obj
-
-        if not commit.hex in self.candidates_for_comparison:
-            return False
-        elif past_obj is not None and self.current_obj.hex == past_obj.hex:
-            # there are no differences in version of the file
-            # this may be the last commit where this is the case
-            # so, we queue up the parents of this commit to see if any
-            # of these commits have the file in the same state
-
-            # forget about any checking we are doing
-            self.candidates_for_comparison.clear()
-            # queue up checking for parent commits
-            self.candidates_for_comparison.update(
-                [c.hex for c in commit.parents]
-            )
-
-            # store this commit (in case this is the modifying commit)
-            self.mod_commit = commit
-            return False
-        else:
-            # file has been removed, or is different
-
-            # if there are no more places to look for the source of the change
-            # then the mod_commit is really the modifying commit
-            self.candidates_for_comparison.remove(commit.hex)
-            if len(self.candidates_for_comparison) == 0:
-                return True
-
-    def ignore_pre_init(self):
-        # after creation of object,
-        # check if we want to investigate this object
-        # all we have at this point is object name
-        if not (args.show_hidden or args.files) and self.is_hidden():
-            return True
-        else:
-            return False
-
-    def ignore_post_init(self):
-        # after finding the current status of the object in git history,
-        # check if we want to investigate this object
-        # at this point, we have the object's current_hex
-        if args.hide_untracked and self.current_obj is None:
-            return True
-        else:
-            return False
-
-    def ignore_post_hist(self):
-        # after finding the history of the object,
-        # check if we want to report about this object
-        # at this point, we have the commit this object was last modified by
-        return False
-
-    def is_hidden(self):
-        split = split_path(self.relpath)
-        return any(map(lambda p: p[0] == '.', split))
-
-    @property
-    def mod_date(self):
-        if not hasattr(self, '_mod_date'):
-            if self.mod_commit is None:
-                self._mod_date = None
-            else:
-                if args.author_date:
-                    # use author date
-                    import subprocess
-                    timestamp = int(subprocess.check_output(
-                        ['git', 'show', '-s', '--format=%at', self.mod_commit.hex]
-                    ))
-                else:
-                    # use committer date
-                    timestamp = self.mod_commit.commit_time
-                self._mod_date = datetime.datetime.fromtimestamp(timestamp)
-        return self._mod_date
-
-    def __lt__(self, other):
-        if self.mod_date is None:
-            return True
-        elif other.mod_date is None:
-            return False
-        else:
-            return self.mod_date < other.mod_date
-
-
-def walk_file_tree(file_tree, git_tree, function):
-    '''
-    Takes a file tree and a git tree object, and a function of type:
-        (Path, git_obj) -> Bool
-
-    A file_tree represents the directory structure of the files upon
-    which we are operating.  More specifically, file_tree is a list of
-    tuples. Each tuple is of type:
-        - (str, Path); maps a file path to a Path object
-        - (str, file_tree); maps a file path to directory / file_tree
-    where str represents part of a file path.
-
-    Recursively traverse file tree and git tree simultaenously.
-    Apply function to all paths and tree_objects (paired).
-    Remove the path from the file tree if the function returns true.
-
-    This function minimizes the amount of traversing the file tree
-    required.
-    '''
-    i = 0
-    while i < len(file_tree):
-        path_segment, path = file_tree[i]
-
-        if git_tree is None:
-            git_obj = None
-        elif path_segment in git_tree:
-            git_obj = git_tree[path_segment]
-        else:
-            git_obj = None
-
-        if isinstance(path, list):
-            if git_obj is not None:
-                # we only convert to object (presumably tree)
-                # if we are actually going to traverse this
-                # if we are only interested in the hex, we don't need
-                # to do the extra lookup
-                git_obj = git_obj.to_object()
-            walk_file_tree(path, git_obj, function)
-            remove = len(path) == 0
-        else:
-            remove = function(path, git_obj)
-
-        if remove:
-            del file_tree[i]
-        else:
-            i += 1
+#     # print each row, columns seperated by colsep, each column at the
+#     # appropriate width
+#     for r in rows:
+#         cols = [justify_and_colourize(text, width)
+#                 for text, width
+#                 in itertools.izip_longest(r, widths, fillvalue='')]
+#         print colsep.join(cols)
 
 
 def main():
@@ -298,20 +94,19 @@ def main():
                         action='store_true')
     args = parser.parse_args()
 
-    repo = pygit2.Repository(pygit2.discover_repository('.'))
+    repo_dir = pygit2.discover_repository('.').rstrip('/')
+    print repo_dir
+    repo_dir = os.path.dirname(repo_dir)
+    print repo_dir
 
-    file_tree = list()
     listing = args.files or os.listdir(os.getcwd())
-    paths = [Path(path, repo) for path in listing]
 
-    git_paths = [p.path for p in paths]
+    git_paths = [os.path.relpath(p, repo_dir) for p in listing]
+
     commits = _gitext.mod_commits(git_paths)
-    for p, c in zip(paths, commits):
-        print p.relpath, c
-        
-    
-    output_rows = [p.cols() for p in paths]
-    print_table(output_rows)
+
+    for p, c in zip(listing, commits):
+        print p, c
 
 if __name__ == '__main__':
     main()

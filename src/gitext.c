@@ -4,8 +4,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * CONSTANTS
+ */
+
 #define MAX_REPO_PATH_LEN 128
 #define MAX_HEX_LEN (40 + 1)
+
+git_oid BLANK_OID = { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } };
+
+
+/*
+ * DATA DEFINITIONS
+ */
 
 struct pathT;
 
@@ -32,9 +43,11 @@ struct pathT {
 };
 typedef struct pathT path;
 
+
 /*
  * DEBUGGING
  */
+
 void git_oid_print(const git_oid *oid) {
     if (oid) {
         char hex[MAX_HEX_LEN];
@@ -89,11 +102,11 @@ void tracked_path_init(path *path, char *segment) {
     // assumed that name is already set
     path->is_tree = 0;
     path->tracked = malloc(sizeof(tracked_path));
-    //path->tracked->oid = 0;
-    //path->tracked->modifying_commit = 0;
     path->tracked->commit_queue = NULL;
     path->name = segment;
-    //path->tracked->mod_date = 0;
+
+    // modifying_commit and oid are initialized later
+    // (namely, by set_initial_oid)
 }
 
 void file_tree_init(path *path, char *segment) {
@@ -339,7 +352,9 @@ int file_tree_map(git_repository *repo, git_commit *commit,
             }
             r++;
         }
-        return w == 0;
+        // return true if we have written nothing, meaning this tree
+        // is now empty, and should not be returned to
+        return w == file_tree->children.array;
     } else {
         printf("Tried to map over tracked file\n");
         exit(1);
@@ -347,7 +362,7 @@ int file_tree_map(git_repository *repo, git_commit *commit,
     }
 }
 
-void map_helper(git_repository *repo, git_oid oid,
+int map_helper(git_repository *repo, git_oid oid,
                 path *file_tree,
                 int (*f)(tracked_path*, const git_tree_entry*,
                          git_commit*)) {
@@ -363,9 +378,10 @@ void map_helper(git_repository *repo, git_oid oid,
     if (err) {
         printf("Bad tree while revwalking");
     }
-    file_tree_map(repo, commit, file_tree, tree, f);
+    int done = file_tree_map(repo, commit, file_tree, tree, f);
     git_tree_free(tree);
     git_commit_free(commit);
+    return done;
 }
 
 /*
@@ -420,7 +436,9 @@ void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
         map_helper(repo, oid, file_tree, &set_initial_oid);
 
         while (git_revwalk_next(&oid, history) == 0) {
-            map_helper(repo, oid, file_tree, &compare_to_past);
+            if(map_helper(repo, oid, file_tree, &compare_to_past)) {
+                break;
+            }
         }
         file_tree_map(repo, NULL, file_tree, NULL, &echo);
     }
