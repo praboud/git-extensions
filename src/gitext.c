@@ -85,29 +85,32 @@ void git_oid_array_add_parents(git_commit *commit, git_oid **array, int *n) {
 }
 
 
-void tracked_path_init(path *path) {
+void tracked_path_init(path *path, char *segment) {
     // assumed that name is already set
     path->is_tree = 0;
     path->tracked = malloc(sizeof(tracked_path));
     //path->tracked->oid = 0;
     //path->tracked->modifying_commit = 0;
     path->tracked->commit_queue = NULL;
+    path->name = segment;
     //path->tracked->mod_date = 0;
 }
 
-void file_tree_init(path *path) {
+void file_tree_init(path *path, char *segment) {
     path->is_tree = 1;
     path->children.capacity = 0;
     path->children.filled = 0;
     path->children.array = NULL;
+    path->name = segment;
 }
 
-path* file_tree_insert_internal(path *file_tree, char *segment) {
+path* file_tree_insert_internal(path *file_tree, char *segment,
+                                void (*init)(path*, char*)) {
     int i;
     if (!(file_tree && file_tree->is_tree)) {
         printf("Tried to insert into a file\n");
         exit(1);
-    } 
+    }
 
     path_array children = file_tree->children;
 
@@ -135,11 +138,23 @@ path* file_tree_insert_internal(path *file_tree, char *segment) {
     }
 
     path *new_path = malloc(sizeof(path));
-    new_path->name = segment;
 
     file_tree->children.array[file_tree->children.filled++] = new_path;
 
+    init(new_path, segment);
     return new_path;
+}
+
+/*
+ * makes ``a`` point to a NULL terminated string n long, containing
+ * the first n characters from b
+ */
+void strcpyn_term(char **a, const char *b, int n) {
+    *a = malloc((n + 1) * sizeof(char));
+    char *p = *a;
+    char *end = p + n;
+    while (p < end) *p++ = *b++;
+    *p = '\0';
 }
 
 tracked_path *file_tree_insert(path *file_tree, const char *file_path) {
@@ -148,24 +163,16 @@ tracked_path *file_tree_insert(path *file_tree, const char *file_path) {
     int section_length;
     while (sep = strchr(file_path, '/')) {
         section_length = sep - file_path;
-        section = malloc(section_length * sizeof(char));
-        char *s = section;
-        while (file_path < sep) {
-            *s++ = *file_path++;
-        }
-        file_path++;
-        file_tree = file_tree_insert_internal(file_tree, section);
-        file_tree_init(file_tree);
-    }
-    section_length = strlen(file_path);
+        strcpyn_term(&section, file_path, section_length);
 
-    section = malloc(section_length * sizeof(char));
-    char *s = section;
-    while (*file_path) {
-        *s++ = *file_path++;
+        file_path = sep + 1;
+        file_tree = file_tree_insert_internal(file_tree, section, &file_tree_init);
     }
-    path *p = file_tree_insert_internal(file_tree, section);
-    tracked_path_init(p);
+    printf("last seen is %c\n", *(file_path - 1));
+    section_length = strlen(file_path);
+    strcpyn_term(&section, file_path, section_length);
+
+    path *p = file_tree_insert_internal(file_tree, section, &tracked_path_init);
     return p->tracked;
 }
 
@@ -219,7 +226,45 @@ int compare_to_past(tracked_path *p, const git_tree_entry *e,
  * FILE TREE MAPPING
  */
 
-int map_over_file_tree(git_repository *repo, git_commit *commit,
+void file_tree_free(path *t) {
+    // does not free tracked path, because we usually want to use this
+    // after the tree has been freed
+    int i;
+    if (t) {
+        if (t->name) {
+            free(t->name);
+        }
+        if (t->is_tree) {
+            if (t->children.array) {
+                for (i = 0; i < t->children.filled; i++) {
+                    file_tree_free(t->children.array[i]);
+                }
+                free(t->children.array);
+            }
+        }
+        free(t);
+    }
+}
+
+void tracked_path_free(tracked_path *t) {
+    if (t) {
+        free(t->commit_queue);
+        free(t);
+    }
+}
+
+/*
+ * Takes a file tree and a git tree object, and a function of type:
+ * (Path, git_obj) -> Bool
+ *
+ * Recursively traverse file tree and git tree simultaenously.
+ * Apply function to all paths and tree_objects (paired).
+ * Remove the path from the file tree if the function returns true.
+ *
+ * This function minimizes the amount of traversing the file tree
+ * required.
+ */
+int file_tree_map(git_repository *repo, git_commit *commit,
                        path *file_tree, git_tree *git_tree_v,
                        int (*f)(tracked_path*, const git_tree_entry*,
                                 git_commit*)
@@ -229,7 +274,11 @@ int map_over_file_tree(git_repository *repo, git_commit *commit,
         path **r = file_tree->children.array;
         path **w = r;
         path **end = r + file_tree->children.filled;
+        // iterate over every child of the file tree
         while(r < end) {
+            // loop invariant: w <= r
+
+            // lookup the corresponding git_tree_element
             char *segment = (*r)->name;
             const git_tree_entry *entry;
 
@@ -238,9 +287,14 @@ int map_over_file_tree(git_repository *repo, git_commit *commit,
             } else {
                 entry = NULL;
             }
-            // invariant: w <= r
+            // remove whether or not we want to remove this path from the tree
             int remove;
+
             if ((*r)->is_tree) {
+                // if the path is another file tree, we recurse
+                // first, however, we must lookup the tree object in git
+                // this is relatively expensive, so we try to avoid if we
+                // don't need the tree (and only need the hex of the tree)
                 git_tree *subtree;
                 if (entry) {
                     git_object *obj;
@@ -250,6 +304,7 @@ int map_over_file_tree(git_repository *repo, git_commit *commit,
                     }
                     if (git_object_type(obj) == GIT_OBJ_TREE) {
                         subtree = (git_tree*) obj;
+                        obj = NULL;
                     } else {
                         subtree = NULL;
                         git_object_free(obj);
@@ -257,15 +312,30 @@ int map_over_file_tree(git_repository *repo, git_commit *commit,
                 } else {
                     subtree = NULL;
                 }
-                remove = map_over_file_tree(repo, commit, *r, subtree, f);
+                remove = file_tree_map(repo, commit, *r, subtree, f);
+                if (subtree) {
+                    git_tree_free(subtree);
+                }
             } else {
                 remove = f((*r)->tracked, entry, commit);
             }
 
-            if (!remove) {
-                *w++ = *r;
-            } else {
+            /*if (entry) {
+                git_tree_entry_free(entry);
+            }*/
+
+            if (remove) {
+                // if we want to remove the entry, we free it, and then
+                // NULL it that spot in the array may get written over
+                // later
+                file_tree_free(*r);
+                *r = NULL;
                 (file_tree->children.filled)--;
+            } else {
+                // if we don't want to remove it, then we copy the pointer
+                // back into the array (unless the copying is redundant)
+                if (w != r) *w = *r;
+                w++;
             }
             r++;
         }
@@ -277,29 +347,8 @@ int map_over_file_tree(git_repository *repo, git_commit *commit,
     }
 }
 
-void get_current_git_repository(git_repository **repo) {
-    const char current_directory []= ".";
-    char repo_path [MAX_REPO_PATH_LEN];
-    int err;
-
-    err = git_repository_discover(repo_path, MAX_REPO_PATH_LEN,
-                                  current_directory, 1, NULL);
-    
-    if (err) {
-        printf("Not in a git repository");
-        exit(1);
-    } 
-
-    err = git_repository_open(repo, repo_path);
-
-    if (err) {
-        printf("Could not open git repository");
-        exit(1);
-    }
-}
-
 void map_helper(git_repository *repo, git_oid oid,
-                path *file_tree, 
+                path *file_tree,
                 int (*f)(tracked_path*, const git_tree_entry*,
                          git_commit*)) {
 
@@ -311,38 +360,51 @@ void map_helper(git_repository *repo, git_oid oid,
         exit(1);
     }
     err = git_commit_tree(&tree, commit);
-    map_over_file_tree(repo, commit, file_tree, tree, f);
+    if (err) {
+        printf("Bad tree while revwalking");
+    }
+    file_tree_map(repo, commit, file_tree, tree, f);
+    git_tree_free(tree);
+    git_commit_free(commit);
 }
 
 /*
- * PYTHON BOILERPLACE
+ * GENERAL HELPERS
  */
 
-static PyObject *py_mod_commits(PyObject *self, PyObject *args) {
-    int i;
-    PyObject *path_list;
+void get_current_git_repository(git_repository **repo) {
+    const char current_directory []= ".";
+    char repo_path [MAX_REPO_PATH_LEN];
+    int err;
 
-    if (!PyArg_ParseTuple(args, "O", &path_list)) {
-        return NULL;
+    err = git_repository_discover(repo_path, MAX_REPO_PATH_LEN,
+                                  current_directory, 1, NULL);
+
+    if (err) {
+        printf("Not in a git repository");
+        exit(1);
     }
-    int path_count = PyList_Size(path_list);
 
+    err = git_repository_open(repo, repo_path);
+
+    if (err) {
+        printf("Could not open git repository");
+        exit(1);
+    }
+}
+
+void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
+    int i;
     path *file_tree = malloc(sizeof(path));
+    file_tree_init(file_tree, NULL);
 
-    // setup file tree
-    //int path_count = 2;
-    //char *paths[] = {"setup.py", "bin/git-recent"};
-
-    file_tree_init(file_tree);
     tracked_path **tracked = malloc(path_count * sizeof(tracked_path*));
 
     for (i = 0; i < path_count; i++) {
-        PyObject *s = PySequence_GetItem(path_list, i);
-        tracked[i] = file_tree_insert(file_tree, PyString_AsString(s));
+        tracked[i] = file_tree_insert(file_tree, paths[i]);
     }
 
     // walk history
-
     // vars
     git_revwalk *history;
     git_oid oid;
@@ -360,8 +422,40 @@ static PyObject *py_mod_commits(PyObject *self, PyObject *args) {
         while (git_revwalk_next(&oid, history) == 0) {
             map_helper(repo, oid, file_tree, &compare_to_past);
         }
-        map_over_file_tree(repo, NULL, file_tree, NULL, &echo);
+        file_tree_map(repo, NULL, file_tree, NULL, &echo);
     }
+
+    *out = tracked;
+
+    // free memory
+    git_repository_free(repo);
+    git_revwalk_free(history);
+    file_tree_free(file_tree);
+}
+
+/*
+ * PYTHON BOILERPLACE
+ */
+
+static PyObject *py_mod_commits(PyObject *self, PyObject *args) {
+    int i;
+    PyObject *path_list;
+
+    if (!PyArg_ParseTuple(args, "O", &path_list)) {
+        return NULL;
+    }
+    int path_count = PyList_Size(path_list);
+
+    char **path_array = malloc(path_count * sizeof(char*));
+
+    for (i = 0; i < path_count; i++) {
+        PyObject *s = PySequence_GetItem(path_list, i);
+        path_array[i] = PyString_AsString(s);
+    }
+
+    tracked_path **tracked;
+
+    mod_commits_internal(&tracked, path_array, path_count);
 
     PyObject *out = PyList_New(path_count);
     for (i = 0; i < path_count; i++) {
@@ -371,8 +465,30 @@ static PyObject *py_mod_commits(PyObject *self, PyObject *args) {
         PyObject *hex = PyString_FromString(hex_prim);
         PyList_SetItem(out, i, hex);
     }
+
     return out;
 }
+
+/*
+ * TESTING BOILERPLATE
+ */
+
+int main(int argc, char *argv[]) {
+    char *paths[] = { "setup.py", "src/gitext.c", "bin/git-recent" };
+    int n = 3;
+    tracked_path **tracked;
+    int i;
+
+    mod_commits_internal (&tracked, paths, n);
+
+    for (i = 0; i < n; i++) {
+        printf("%s ", paths[i]);
+        git_oid_print(&tracked[i]->modifying_commit);
+        tracked_path_free(tracked[i]);
+    }
+    free(tracked);
+}
+
 
 static PyMethodDef GitExtMethods[] = {
     {"mod_commits", py_mod_commits, METH_VARARGS, ""},
