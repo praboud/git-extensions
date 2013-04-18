@@ -78,7 +78,7 @@ void git_oid_array_remove(const git_oid *oid, git_oid *array, int *n) {
     for (i = 0; i < *n; i++) {
         if (git_oid_cmp(array + i, oid) == 0) {
             for (j = i + 1; j < *n; j++) {
-                array[j-i] = array[j];
+                array[j-1] = array[j];
             }
             (*n)--;
             break;
@@ -216,23 +216,20 @@ int echo(tracked_path *p, const git_tree_entry *e, git_commit *c) {
 int compare_to_past(tracked_path *p, const git_tree_entry *e,
                     git_commit *commit) {
     const git_oid *commit_oid = git_commit_id(commit);
+    int found = 0;
     if (!git_oid_array_elem(commit_oid, p->commit_queue,
                             p->commit_queue_length)) {
-        return 0;
     } else if (e && git_oid_cmp(&p->oid, git_tree_entry_id(e)) == 0) {
         // file matches what it used to
         git_oid_array_add_parents(commit, &p->commit_queue,
                                   &p->commit_queue_length);
         p->modifying_commit = *commit_oid;
-        return 0;
-
     } else {
         git_oid_array_remove(commit_oid, p->commit_queue,
                              &(p->commit_queue_length));
-        if (p->commit_queue_length == 0) {
-            return 1;
-        }
+        found = p->commit_queue_length == 0;
     }
+    return found;
 }
 
 /*
