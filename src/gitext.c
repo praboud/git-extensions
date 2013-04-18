@@ -121,7 +121,7 @@ path* file_tree_insert_internal(path *file_tree, char *segment,
                                 void (*init)(path*, char*)) {
     int i;
     if (!(file_tree && file_tree->is_tree)) {
-        printf("Tried to insert into a file\n");
+        printf("fatal: Tried to insert into a file\n");
         exit(1);
     }
 
@@ -181,7 +181,6 @@ tracked_path *file_tree_insert(path *file_tree, const char *file_path) {
         file_path = sep + 1;
         file_tree = file_tree_insert_internal(file_tree, section, &file_tree_init);
     }
-    printf("last seen is %c\n", *(file_path - 1));
     section_length = strlen(file_path);
     strcpyn_term(&section, file_path, section_length);
 
@@ -309,7 +308,7 @@ int file_tree_map(git_repository *repo, git_commit *commit,
                 if (entry) {
                     git_object *obj;
                     if (git_tree_entry_to_object(&obj, repo, entry)) {
-                        printf("Could not lookup object");
+                        printf("fatal: Could not lookup object");
                         exit(1);
                     }
                     if (git_object_type(obj) == GIT_OBJ_TREE) {
@@ -353,7 +352,7 @@ int file_tree_map(git_repository *repo, git_commit *commit,
         // is now empty, and should not be returned to
         return w == file_tree->children.array;
     } else {
-        printf("Tried to map over tracked file\n");
+        printf("fatal: Tried to map over tracked file\n");
         exit(1);
         //return f(file_tree->tracked);
     }
@@ -368,12 +367,12 @@ int map_helper(git_repository *repo, git_oid oid,
     git_tree *tree;
     int err = git_commit_lookup(&commit, repo, &oid);
     if (err) {
-        printf("Bad ref while revwalking");
+        printf("fatal: Bad ref while revwalking");
         exit(1);
     }
     err = git_commit_tree(&tree, commit);
     if (err) {
-        printf("Bad tree while revwalking");
+        printf("fatal: Bad tree while revwalking");
     }
     int done = file_tree_map(repo, commit, file_tree, tree, f);
     git_tree_free(tree);
@@ -394,14 +393,14 @@ void get_current_git_repository(git_repository **repo) {
                                   current_directory, 1, NULL);
 
     if (err) {
-        printf("Not in a git repository");
+        printf("fatal: Not in a git repository");
         exit(1);
     }
 
     err = git_repository_open(repo, repo_path);
 
     if (err) {
-        printf("Could not open git repository");
+        printf("fatal: Could not open git repository");
         exit(1);
     }
 }
