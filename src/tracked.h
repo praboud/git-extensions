@@ -32,4 +32,7 @@ int tracked_path_map(git_repository *repo, git_commit *commit,
                               git_commit*)
                      );
 
+void tracked_path_followed_array(tracked_path *tree, tracked_path **out);
+void tracked_path_add_name_full(tracked_path *p, char *name);
+
 #endif

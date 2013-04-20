@@ -22,6 +22,11 @@ void tracked_path_init(tracked_path *path, char *segment) {
     // (namely, by set_initial_oid)
 }
 
+void tracked_path_add_name_full(tracked_path *p, char *name) {
+    p->name_full = malloc(strlen(name) * sizeof(char));
+    strcpy(p->name_full, name);
+}
+
 void tracked_path_add_child(tracked_path *parent, tracked_path *child) {
     if (parent->capacity == parent->filled) {
         int new_capacity;
@@ -184,3 +189,44 @@ int tracked_path_map(git_repository *repo, git_commit *commit,
     return all_commits_found;
 }
 
+/* structure for internal use */
+struct tracked_path_walker {
+    tracked_path **children;
+    int index;
+    int length;
+    struct tracked_path_walker *rest;
+};
+
+void tracked_path_followed_array(tracked_path* p, tracked_path **a) {
+    int i = 0;
+    struct tracked_path_walker *q, *t;
+
+    q = NULL;
+
+    while (p) {
+        printf("looping\n");
+        if (p->followed) {
+            *a++ = p;
+        }
+        if (p->filled) {
+            if (p->filled > 1) {
+                t = malloc(sizeof(struct tracked_path_walker));
+                t->index = 1;
+                t->length = p->filled;
+                t->children = p->children;
+                t->rest = q;
+                q = t;
+            }
+            p = p->children[0];
+        } else if (q){
+            p = q->children[q->index++];
+            if (q->index == q->length) {
+                t = q->rest;
+                free(q);
+                q = t;
+            }
+        } else {
+            p = NULL;
+        }
+    }
+}
