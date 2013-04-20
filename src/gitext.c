@@ -22,6 +22,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <dirent.h>
 
 /*
  * CONSTANTS
@@ -29,10 +31,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #define MAX_REPO_PATH_LEN 128
 #define MAX_HEX_LEN (40 + 1)
-#define PATH_MAX 256
-
-git_oid BLANK_OID = { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } };
-
 
 /*
  * DATA DEFINITIONS
@@ -41,6 +39,7 @@ git_oid BLANK_OID = { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 struct pathT;
 
 typedef struct {
+    char tracked;
     git_oid oid;
     git_oid modifying_commit;
     git_oid *commit_queue;
@@ -123,6 +122,8 @@ void tracked_path_init(path *path, char *segment) {
     path->is_tree = 0;
     path->tracked = malloc(sizeof(tracked_path));
     path->tracked->commit_queue = NULL;
+    path->tracked->commit_queue_length = 0;
+    path->tracked->tracked = 0;
     path->name = segment;
 
     // modifying_commit and oid are initialized later
@@ -141,7 +142,7 @@ path* file_tree_insert_internal(path *file_tree, char *segment,
                                 void (*init)(path*, char*)) {
     int i;
     if (!(file_tree && file_tree->is_tree)) {
-        printf("fatal: Tried to insert into a file\n");
+        printf("fatal: Tried to insert into a file on segment %s into %s\n", segment, file_tree->name);
         exit(1);
     }
 
@@ -214,14 +215,15 @@ tracked_path *file_tree_insert(path *file_tree, const char *file_path) {
 int set_initial_oid(tracked_path *p, const git_tree_entry *e,
                     git_commit *commit) {
     if (e) {
+        p->tracked = 1;
         p->oid = *git_tree_entry_id(e);
         p->modifying_commit = *git_commit_id(commit);
         git_oid_array_add_parents(commit, &p->commit_queue,
                                   &p->commit_queue_length);
-        return 0;
     } else {
-        return 1;
+        p->tracked = 0;
     }
+    return !p->tracked;
 }
 
 /*
@@ -280,7 +282,7 @@ void file_tree_free(path *t) {
 
 void tracked_path_free(tracked_path *t) {
     if (t) {
-        free(t->commit_queue);
+        if (t->commit_queue) free(t->commit_queue);
         free(t);
     }
 }
@@ -331,7 +333,7 @@ int file_tree_map(git_repository *repo, git_commit *commit,
                 if (entry) {
                     git_object *obj;
                     if (git_tree_entry_to_object(&obj, repo, entry)) {
-                        printf("fatal: Could not lookup object");
+                        printf("fatal: Could not lookup object\n");
                         exit(1);
                     }
                     if (git_object_type(obj) == GIT_OBJ_TREE) {
@@ -390,12 +392,12 @@ int map_helper(git_repository *repo, git_oid oid,
     git_tree *tree;
     int err = git_commit_lookup(&commit, repo, &oid);
     if (err) {
-        printf("fatal: Bad ref while revwalking");
+        printf("fatal: Bad ref while revwalking\n");
         exit(1);
     }
     err = git_commit_tree(&tree, commit);
     if (err) {
-        printf("fatal: Bad tree while revwalking");
+        printf("fatal: Bad tree while revwalking\n");
     }
     int done = file_tree_map(repo, commit, file_tree, tree, f);
     git_tree_free(tree);
@@ -406,13 +408,6 @@ int map_helper(git_repository *repo, git_oid oid,
 /*
  * GENERAL HELPERS
  */
-
-void get_current_git_repository(git_repository **repo) {
-    const char current_directory []= ".";
-    int err;
-
-
-}
 
 /*
  * assumed that both paths are absolute
@@ -427,45 +422,37 @@ char * relpath(char *refpoint, char *path, char *buf) {
     }
 }
 
-void file_tree_setup_with_paths(char **paths, int path_count,
-                            char *repo_path, char *cwd,
-                            path **file_tree, tracked_path ***tracked) {
+tracked_path* file_tree_add_path(char *file_path, char *repo_path, char *cwd,
+                        path *file_tree) {
     char buf[PATH_MAX];
     char real_path[PATH_MAX];
-    int i;
 
-    *file_tree = malloc(sizeof(path));
-    file_tree_init(*file_tree, NULL);
-    *tracked = malloc(path_count * sizeof(tracked_path*));
-
-    for (i = 0; i < path_count; i++) {
-        strcpy(buf, cwd);
-        strcat(buf, "/");
-        strcat(buf, paths[i]);
-        //printf("buf: %s\n", buf);
-        if (!realpath(buf, real_path)) {
-            printf("fatal: Could not get real path\n");
-            exit(1);
-        }
-        //printf("tracking path %s\n", real_path);
-        char *p = real_path;
-        char *q = repo_path;
-        while (*q && *p == *q) {
-            p++;
-            q++;
-        }
-        //printf("tracking: %s\n", p);
-
-        (*tracked)[i] = file_tree_insert(*file_tree, p);
+    strcpy(buf, cwd);
+    strcat(buf, "/");
+    strcat(buf, file_path);
+    //printf("buf: %s\n", buf);
+    if (!realpath(buf, real_path)) {
+        printf("fatal: Could not get real path\n");
+        exit(1);
     }
+    //printf("tracking path %s\n", real_path);
+    char *p = real_path;
+    char *q = repo_path;
+    while (*q && *p == *q) {
+        p++;
+        q++;
+    }
+    printf("tracking: %s\n", p);
+
+    return file_tree_insert(file_tree, p);
 }
 
 
-void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
+int mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
     int i;
     int err;
     char repo_path [MAX_REPO_PATH_LEN];
-    char current_directory[PATH_MAX];
+    char cwd[PATH_MAX];
 
     path *file_tree;
 
@@ -473,17 +460,20 @@ void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
 
     tracked_path **tracked;
 
+    file_tree = malloc(sizeof(path));
+    file_tree_init(file_tree, NULL);
+    tracked = malloc(100 * sizeof(tracked_path*));
 
-    if (!getcwd(current_directory, PATH_MAX)) {
-        printf("fatal: Could not get current working directory");
+    if (!getcwd(cwd, PATH_MAX)) {
+        printf("fatal: Could not get current working directory\n");
         exit(1);
     }
 
     // get git repo directory
     err = git_repository_discover(repo_path, MAX_REPO_PATH_LEN,
-                                  current_directory, 1, NULL);
+                                  cwd, 1, NULL);
     if (err) {
-        printf("fatal: Not in a git repository");
+        printf("fatal: Not in a git repository\n");
         exit(1);
     }
 
@@ -491,12 +481,41 @@ void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
     err = git_repository_open(&repo, repo_path);
 
     if (err) {
-        printf("fatal: Could not open git repository");
+        printf("fatal: Could not open git repository\n");
         exit(1);
     }
 
-    file_tree_setup_with_paths(paths, path_count, repo_path, current_directory,
-                               &file_tree, &tracked);
+    if (path_count) {
+        for (i = 0; i < path_count; i++) {
+            tracked[i] = file_tree_add_path(
+                paths[i],
+                repo_path,
+                cwd,
+                file_tree
+            );
+        }
+    } else {
+        DIR *d;
+        struct dirent *de;
+        d = opendir("./");
+        if (d) {
+            while (de = readdir(d)) {
+                if (de->d_name[0] != '.') {
+                    tracked[path_count++] = file_tree_add_path(
+                        de->d_name,
+                        repo_path,
+                        cwd,
+                        file_tree
+                    );
+                }
+            }
+            closedir(d);
+        } else {
+            printf("fatal: Could not open directory\n");
+            exit(1);
+        }
+    }
+
 
     // walk history
     // vars
@@ -526,6 +545,8 @@ void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
     git_repository_free(repo);
     git_revwalk_free(history);
     file_tree_free(file_tree);
+
+    return path_count;
 }
 
 /*
@@ -535,13 +556,19 @@ void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
 int main(int argc, char *argv[]) {
     tracked_path **tracked;
     int i;
+    char hex[MAX_HEX_LEN];
+    hex[MAX_HEX_LEN - 1] = '\0';
 
-    mod_commits_internal (&tracked, argv+1, argc-1);
+    int count = mod_commits_internal (&tracked, argv+1, argc-1);
 
-    for (i = 1; i < argc; i++) {
-        printf("%s ", argv[i]);
-        git_oid_print(&tracked[i-1]->modifying_commit);
-        tracked_path_free(tracked[i-1]);
+    for (i = 0; i < count; i++) {
+        if (tracked[i]->tracked) {
+            git_oid_fmt(hex, &tracked[i]->modifying_commit);
+        } else {
+            strcpy(hex, "untracked");
+        }
+        printf("%s\n", hex);
+        tracked_path_free(tracked[i]);
     }
     free(tracked);
 }
