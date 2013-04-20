@@ -1,4 +1,3 @@
-#include <Python.h>
 #include <git2.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +9,7 @@
 
 #define MAX_REPO_PATH_LEN 128
 #define MAX_HEX_LEN (40 + 1)
+#define PATH_MAX 256
 
 git_oid BLANK_OID = { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } };
 
@@ -204,6 +204,7 @@ int set_initial_oid(tracked_path *p, const git_tree_entry *e,
     }
 }
 
+/*
 int echo(tracked_path *p, const git_tree_entry *e, git_commit *c) {
         const git_oid *oid = &(p->modifying_commit);
         char hex[MAX_HEX_LEN];
@@ -212,6 +213,8 @@ int echo(tracked_path *p, const git_tree_entry *e, git_commit *c) {
         printf("%s\n", hex);
     return 0;
 }
+*/
+
 int compare_to_past(tracked_path *p, const git_tree_entry *e,
                     git_commit *commit) {
     const git_oid *commit_oid = git_commit_id(commit);
@@ -386,43 +389,101 @@ int map_helper(git_repository *repo, git_oid oid,
 
 void get_current_git_repository(git_repository **repo) {
     const char current_directory []= ".";
-    char repo_path [MAX_REPO_PATH_LEN];
     int err;
 
+
+}
+
+/*
+ * assumed that both paths are absolute
+ */
+char * relpath(char *refpoint, char *path, char *buf) {
+    while (*refpoint && *refpoint++ == *path++);
+    if (!*refpoint) {
+        strcpy(buf, path);
+        return buf;
+    } else {
+        return NULL;
+    }
+}
+
+void file_tree_setup_with_paths(char **paths, int path_count,
+                            char *repo_path, char *cwd,
+                            path **file_tree, tracked_path ***tracked) {
+    char buf[PATH_MAX];
+    char real_path[PATH_MAX];
+    int i;
+
+    *file_tree = malloc(sizeof(path));
+    file_tree_init(*file_tree, NULL);
+    *tracked = malloc(path_count * sizeof(tracked_path*));
+
+    for (i = 0; i < path_count; i++) {
+        strcpy(buf, cwd);
+        strcat(buf, "/");
+        strcat(buf, paths[i]);
+        //printf("buf: %s\n", buf);
+        if (!realpath(buf, real_path)) {
+            printf("fatal: Could not get real path\n");
+            exit(1);
+        }
+        //printf("tracking path %s\n", real_path);
+        char *p = real_path;
+        char *q = repo_path;
+        while (*q && *p == *q) {
+            p++;
+            q++;
+        }
+        //printf("tracking: %s\n", p);
+
+        (*tracked)[i] = file_tree_insert(*file_tree, p);
+    }
+}
+
+
+void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
+    int i;
+    int err;
+    char repo_path [MAX_REPO_PATH_LEN];
+    char current_directory[PATH_MAX];
+
+    path *file_tree;
+
+    git_repository *repo;
+
+    tracked_path **tracked;
+
+
+    if (!getcwd(current_directory, PATH_MAX)) {
+        printf("fatal: Could not get current working directory");
+        exit(1);
+    }
+
+    // get git repo directory
     err = git_repository_discover(repo_path, MAX_REPO_PATH_LEN,
                                   current_directory, 1, NULL);
-
     if (err) {
         printf("fatal: Not in a git repository");
         exit(1);
     }
 
-    err = git_repository_open(repo, repo_path);
+    // open git repo
+    err = git_repository_open(&repo, repo_path);
 
     if (err) {
         printf("fatal: Could not open git repository");
         exit(1);
     }
-}
 
-void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
-    int i;
-    path *file_tree = malloc(sizeof(path));
-    file_tree_init(file_tree, NULL);
-
-    tracked_path **tracked = malloc(path_count * sizeof(tracked_path*));
-
-    for (i = 0; i < path_count; i++) {
-        tracked[i] = file_tree_insert(file_tree, paths[i]);
-    }
+    file_tree_setup_with_paths(paths, path_count, repo_path, current_directory,
+                               &file_tree, &tracked);
 
     // walk history
     // vars
     git_revwalk *history;
     git_oid oid;
-    git_repository *repo;
 
-    get_current_git_repository(&repo);
+    //get_current_git_repository(&repo);
 
     git_revwalk_new(&history, repo);
     git_revwalk_sorting(history, GIT_SORT_TIME);
@@ -436,7 +497,7 @@ void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
                 break;
             }
         }
-        file_tree_map(repo, NULL, file_tree, NULL, &echo);
+        //file_tree_map(repo, NULL, file_tree, NULL, &echo);
     }
 
     *out = tracked;
@@ -448,67 +509,19 @@ void mod_commits_internal(tracked_path ***out, char **paths, int path_count) {
 }
 
 /*
- * PYTHON BOILERPLACE
- */
-
-static PyObject *py_mod_commits(PyObject *self, PyObject *args) {
-    int i;
-    PyObject *path_list;
-
-    if (!PyArg_ParseTuple(args, "O", &path_list)) {
-        return NULL;
-    }
-    int path_count = PyList_Size(path_list);
-
-    char **path_array = malloc(path_count * sizeof(char*));
-
-    for (i = 0; i < path_count; i++) {
-        PyObject *s = PySequence_GetItem(path_list, i);
-        path_array[i] = PyString_AsString(s);
-    }
-
-    tracked_path **tracked;
-
-    mod_commits_internal(&tracked, path_array, path_count);
-
-    PyObject *out = PyList_New(path_count);
-    for (i = 0; i < path_count; i++) {
-        char hex_prim[41];
-        git_oid_fmt(hex_prim, &tracked[i]->modifying_commit);
-        hex_prim[40] = '\0';
-        PyObject *hex = PyString_FromString(hex_prim);
-        PyList_SetItem(out, i, hex);
-    }
-
-    return out;
-}
-
-/*
- * TESTING BOILERPLATE
+ * MAIN: DEAL WITH IO
  */
 
 int main(int argc, char *argv[]) {
-    char *paths[] = { "setup.py", "src/gitext.c", "bin/git-recent" };
-    int n = 3;
     tracked_path **tracked;
     int i;
 
-    mod_commits_internal (&tracked, paths, n);
+    mod_commits_internal (&tracked, argv+1, argc-1);
 
-    for (i = 0; i < n; i++) {
-        printf("%s ", paths[i]);
-        git_oid_print(&tracked[i]->modifying_commit);
-        tracked_path_free(tracked[i]);
+    for (i = 1; i < argc; i++) {
+        printf("%s ", argv[i]);
+        git_oid_print(&tracked[i-1]->modifying_commit);
+        tracked_path_free(tracked[i-1]);
     }
     free(tracked);
-}
-
-
-static PyMethodDef GitExtMethods[] = {
-    {"mod_commits", py_mod_commits, METH_VARARGS, ""},
-    {NULL, NULL, 0, NULL}
-};
-
-PyMODINIT_FUNC init_gitext(void) {
-    (void) Py_InitModule("_gitext", GitExtMethods);
 }
