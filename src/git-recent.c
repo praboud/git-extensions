@@ -27,6 +27,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <unistd.h>
 
 #include "tracked.h"
+#include "oid-array.h"
 
 /*
  * CONSTANTS
@@ -51,58 +52,24 @@ void git_oid_print(const git_oid *oid) {
 }
 
 /*
- * OID ARRAY HELPERS
- */
-
-int git_oid_array_elem(const git_oid *oid, const git_oid *array, int n) {
-    int i;
-    for (i = 0; i < n; i++) {
-        if (git_oid_cmp(array + i, oid) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-void git_oid_array_remove(const git_oid *oid, git_oid *array, int *n) {
-    int i, j;
-    for (i = 0; i < *n; i++) {
-        if (git_oid_cmp(array + i, oid) == 0) {
-            for (j = i + 1; j < *n; j++) {
-                array[j-1] = array[j];
-            }
-            (*n)--;
-            break;
-        }
-    }
-}
-
-void git_oid_array_add_parents(git_commit *commit, git_oid **array, int *n) {
-    int i;
-    int parent_count = git_commit_parentcount(commit);
-    free(*array);
-    *array = malloc(parent_count * sizeof(git_oid));
-    for (i = 0; i < parent_count; i++) {
-        (*array)[i] = *git_commit_parent_oid(commit, i);
-    }
-    *n = parent_count;
-}
-
-
-
-/*
  * CALLBACKS FOR FILE TREE MAP
  */
 int set_initial_oid(tracked_path *p, const git_tree_entry *e,
                     git_commit *commit) {
+    //printf("doing initial check on %s\n", p->name_full);
     if (e) {
         p->in_source_control = 1;
+        p->commit_found = p->commit_found_for_children = 0;
         p->oid = *git_tree_entry_id(e);
         p->modifying_commit = *git_commit_id(commit);
         git_oid_array_add_parents(commit, &p->commit_queue,
                                   &p->commit_queue_length);
+        if (p->filled == 0) p->commit_found_for_children = 1;
+    } else {
+        p->in_source_control = 0;
+        p->commit_found = p->commit_found_for_children = 1;
     }
-    return !e;
+    return p->commit_found;
 }
 
 /*
@@ -119,20 +86,40 @@ int echo(tracked_path *p, const git_tree_entry *e, git_commit *c) {
 int compare_to_past(tracked_path *p, const git_tree_entry *e,
                     git_commit *commit) {
     const git_oid *commit_oid = git_commit_id(commit);
-    int found = 0;
+    //printf("comparing path segment %s\n", p->name_segment);
+    if (strcmp("upgrade", p->name_segment) == 0) {
+        printf("%s hex is ", p->name_segment);
+        git_oid_print(git_tree_entry_id(e));
+        printf("most current is ");
+        git_oid_print(&p->oid);
+    }
     if (!git_oid_array_elem(commit_oid, p->commit_queue,
                             p->commit_queue_length)) {
+        printf("unrecognized commit %s\n", p->name_segment);
+        return UNRECOGNIZED;
     } else if (e && git_oid_cmp(&p->oid, git_tree_entry_id(e)) == 0) {
+        printf("hex matches at %s\n", p->name_segment);
         // file matches what it used to
         git_oid_array_add_parents(commit, &p->commit_queue,
                                   &p->commit_queue_length);
-        p->modifying_commit = *commit_oid;
+
+        // we only change the tentative commit if we have not found
+        // the actual commit yet
+        // we may still want to run this function on a path (specifically a directory)
+        // where we have found the modifying commit in order to determine if
+        // the contents of the directory have changed, and if we should look at them
+        // item by item
+        if (!p->commit_found) p->modifying_commit = *commit_oid;
+        return NO_CHANGES_FOUND;
     } else {
+        printf("hex differs %s\n", p->name_segment);
         git_oid_array_remove(commit_oid, p->commit_queue,
                              &(p->commit_queue_length));
-        found = p->commit_queue_length == 0;
+        p->commit_found = p->commit_queue_length == 0;
+        git_oid_array_add_parents(commit, &p->commit_queue,
+                                  &p->commit_queue_length);
+        return CHANGES_FOUND;
     }
-    return found;
 }
 
 /*
@@ -157,7 +144,7 @@ int map_helper(git_repository *repo, git_oid oid,
     if (err) {
         printf("fatal: Bad tree while revwalking\n");
     }
-    done = tracked_path_map(repo, commit, file_tree, tree, f);
+    done = tracked_path_git_map(repo, commit, file_tree, tree, f);
     git_tree_free(tree);
     git_commit_free(commit);
     return done;
@@ -199,7 +186,7 @@ tracked_path* tracked_path_add_path(char *file_path, char *repo_path, char *cwd,
         real_path++;
         repo_path++;
     }
-    printf("tracking: %s\n", real_path);
+    //printf("tracking: %s\n", real_path);
 
     return tracked_path_insert(file_tree, real_path);
 }
@@ -290,12 +277,18 @@ int mod_commits_internal(tracked_path **out, char **paths, int path_count) {
     if (git_revwalk_next(&oid, history) == 0) {
         map_helper(repo, oid, file_tree, &set_initial_oid);
 
+        int commit_count = 0;
         while (git_revwalk_next(&oid, history) == 0) {
+            printf("checking commit ");
+            git_oid_print(&oid);
+            commit_count++;
+            //tracked_path_map(file_tree, &trace);
+            printf("\n");
             if(map_helper(repo, oid, file_tree, &compare_to_past)) {
                 break;
             }
         }
-        //tracked_path_map(repo, NULL, file_tree, NULL, &echo);
+        printf("checked %d commits\n", commit_count);
     }
 
     *out = file_tree;
@@ -324,7 +317,7 @@ int main(int argc, char *argv[]) {
     tracked = malloc(path_count * sizeof(tracked_path*));
     tracked_path_followed_array(tree, tracked);
 
-    printf("%d tracked paths\n", path_count);
+    //printf("%d tracked paths\n", path_count);
 
     for (i = 0; i < path_count; i++) {
         if (tracked[i]->in_source_control) {

@@ -4,12 +4,59 @@
 #include <git2.h>
 
 #include "tracked.h"
+#include "oid-array.h"
+
+// globals used by function pointers called with tracked_path_map
+// required because C has no closures
+tracked_path **followed_array_global = NULL;
+git_commit *modifying_commit_global;
+
+/* structure for internal use */
+struct tracked_path_walker {
+    tracked_path **children;
+    int index;
+    int length;
+    struct tracked_path_walker *rest;
+};
+
+// utility functions
+
+// apply a function pointer onto every element of a tree
+// the function pointer must do all work with side effects
+void tracked_path_map(tracked_path* p, void (*f)(tracked_path*)) {
+    struct tracked_path_walker *q, *t;
+
+    q = NULL;
+
+    while (p) {
+        f(p);
+        if (p->filled) {
+            if (p->filled > 1) {
+                t = malloc(sizeof(struct tracked_path_walker));
+                t->index = 1;
+                t->length = p->filled;
+                t->children = p->children;
+                t->rest = q;
+                q = t;
+            }
+            p = p->children[0];
+        } else if (q){
+            p = q->children[q->index++];
+            if (q->index == q->length) {
+                t = q->rest;
+                free(q);
+                q = t;
+            }
+        } else {
+            p = NULL;
+        }
+    }
+}
+
 
 void tracked_path_init(tracked_path *path, char *segment) {
     // assumed that name is already set
-    path->in_source_control = 0;
     path->followed = 0;
-    path->commit_found = 0;
     path->children = NULL;
     path->filled = 0;
     path->capacity = 0;
@@ -18,12 +65,15 @@ void tracked_path_init(tracked_path *path, char *segment) {
     path->name_segment = segment;
     path->name_full = NULL;
 
-    // modifying_commit and oid are initialized later
-    // (namely, by set_initial_oid)
+    path->commit_found = path->commit_found_for_children = 0;
+
+    // some initialization is expected to be done by set_initial_oid
+    // oid, modifying_commit, in_source_control are
+    // intentionally not initialized
 }
 
 void tracked_path_add_name_full(tracked_path *p, char *name) {
-    p->name_full = malloc(strlen(name) * sizeof(char));
+    p->name_full = malloc((strlen(name) + 1) * sizeof(char));
     strcpy(p->name_full, name);
 }
 
@@ -110,47 +160,74 @@ void tracked_path_free(tracked_path *t) {
     }
 }
 
+void modifying_commit_mapper(tracked_path *p) {
+    if (p->in_source_control && !p->commit_found) {
+        p->modifying_commit = *git_commit_id(modifying_commit_global);
+        git_oid_array_add_parents(modifying_commit_global, &p->commit_queue,
+                                  &p->commit_queue_length);
+    }
+}
+
+void trace(tracked_path *p) {
+    printf("entry %20s, followed=%d, isc=%d, cf=%d, cffc=%d\n",
+           p->name_segment,
+           p->followed,
+           p->in_source_control,
+           p->commit_found,
+           p->commit_found_for_children);
+}
+
 /*
  * Takes a file tree and a git tree object, and a function of type:
  * (Path, git_obj) -> Bool
  *
  * Recursively traverse file tree and git tree simultaenously.
  * Apply function to all paths and tree_objects (paired).
- * Remove the path from the file tree if the function returns true.
+ * Don't recurse into a path's subtree if the callback returns non-zero
  *
  * This function minimizes the amount of traversing the file tree
  * required.
  */
-int tracked_path_map(git_repository *repo, git_commit *commit,
-                     tracked_path *file_tree, git_tree *git_tree_v,
-                     int (*f)(tracked_path*, const git_tree_entry*,
-                              git_commit*)
-                     ) {
+int tracked_path_git_map(git_repository *repo, git_commit *commit,
+                         tracked_path *file_tree, git_tree *git_tree_v,
+                         int (*f)(tracked_path*, const git_tree_entry*,
+                                  git_commit*)
+                         ) {
 
-    tracked_path **r = file_tree->children;
-    tracked_path **end = r + file_tree->filled;
+    tracked_path *p;
     int all_commits_found = 1;
+    int i;
+    int len = file_tree->filled;
     // iterate over every child of the file tree
-    while(r < end) {
+    for (i = 0; i < len; i++) {
+        p = file_tree->children[i];
         char *segment;
+        int skip;
         const git_tree_entry *entry;
-        if ((*r)->commit_found) {
-            ++r;
+        if (p->commit_found && p->commit_found_for_children) {
             continue;
         }
-        // loop invariant: w <= r
 
         // lookup the corresponding git_tree_element
-        segment = (*r)->name_segment;
+        segment = p->name_segment;
 
         if (git_tree_v) {
             entry = git_tree_entry_byname(git_tree_v, segment);
         } else {
             entry = NULL;
         }
-        // remove whether or not we want to remove this path from the tree
 
-        if ((*r)->filled != 0) {
+        // apply callback, which does some work via side effects to the
+        // tracked_path, and also tells us whether to descend into its
+        // children
+        skip = f(p, entry, commit);
+        if (skip == NO_CHANGES_FOUND && p->filled != 0) {
+            printf("aborting descent at %s\n", p->name_segment);
+            modifying_commit_global = commit;
+            tracked_path_map(p, &modifying_commit_mapper);
+        }
+
+        if (!skip && !p->commit_found_for_children) {
             // if the path is another file tree, we recurse
             // first, however, we must lookup the tree object in git
             // this is relatively expensive, so we try to avoid if we
@@ -172,62 +249,25 @@ int tracked_path_map(git_repository *repo, git_commit *commit,
             } else {
                 subtree = NULL;
             }
-            (*r)->commit_found = tracked_path_map(repo, commit, *r, subtree, f);
+            tracked_path_git_map(repo, commit, p, subtree, f);
             if (subtree) {
                 git_tree_free(subtree);
             }
         }
 
-        if ((*r)->followed) {
-            (*r)->commit_found = f((*r), entry, commit);
-        }
-
-        all_commits_found &= (*r)->commit_found;
-        r++;
+        all_commits_found &= p->commit_found && p->commit_found_for_children;
     }
     // return true if we have written nothing, meaning this tree
     // is now empty, and should not be returned to
+    file_tree->commit_found_for_children = all_commits_found;
     return all_commits_found;
 }
 
-/* structure for internal use */
-struct tracked_path_walker {
-    tracked_path **children;
-    int index;
-    int length;
-    struct tracked_path_walker *rest;
-};
+void followed_array_mapper(tracked_path *tree) {
+    if (tree->followed) *followed_array_global++ = tree;
+}
 
-void tracked_path_followed_array(tracked_path* p, tracked_path **a) {
-    int i = 0;
-    struct tracked_path_walker *q, *t;
-
-    q = NULL;
-
-    while (p) {
-        printf("looping\n");
-        if (p->followed) {
-            *a++ = p;
-        }
-        if (p->filled) {
-            if (p->filled > 1) {
-                t = malloc(sizeof(struct tracked_path_walker));
-                t->index = 1;
-                t->length = p->filled;
-                t->children = p->children;
-                t->rest = q;
-                q = t;
-            }
-            p = p->children[0];
-        } else if (q){
-            p = q->children[q->index++];
-            if (q->index == q->length) {
-                t = q->rest;
-                free(q);
-                q = t;
-            }
-        } else {
-            p = NULL;
-        }
-    }
+void tracked_path_followed_array(tracked_path *tree, tracked_path **out) {
+    followed_array_global = out;
+    tracked_path_map(tree, &followed_array_mapper);
 }
