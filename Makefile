@@ -1,25 +1,23 @@
-prefix=/usr/local
+PREFIX=/usr/local
 
 CC=gcc
-CCFLAGS=-pg -g -O2 -lgit2 -W -Wall -pedantic -MMD
+CFLAGS=-g -O2 -lgit2 -W -Wall -pedantic
 
-all: build
+all: prepare-build git-recent
 
-build: mkbuilddir build/git-recent
+prepare-build:
+	mkdir -p obj
+
+.PHONY: prepare-build
+
+git-recent: obj/git-recent.o obj/tracked.o
+	$(CC) $(CFLAGS) -o $@ $^
+
+obj/git-recent.o: src/git-recent.c src/tracked.h
+	$(CC) $(CFLAGS) -c -o $@ $(firstword $^)
+
+obj/tracked.o: src/tracked.c src/tracked.h
+	$(CC) $(CFLAGS) -c -o $@ $(firstword $^)
 
 install: build/git-recent
-	install -m 0755 build/git-recent $(prefix)/bin
-
-mkbuilddir:
-	mkdir -p build
-
-.PHONY: mkbuilddir
-
-build/git-recent.o: src/git-recent.c
-	$(CC) $(CCFLAGS) -c -o build/git-recent.o src/git-recent.c
-
-build/tracked.o: src/tracked.c
-	$(CC) $(CCFLAGS) -c -o build/tracked.o src/tracked.c
-
-build/git-recent: build/git-recent.o build/tracked.o
-	$(CC) $(CCFLAGS) -o build/git-recent build/git-recent.o build/tracked.o
+	install -m 0755 git-recent ${PREFIX}/bin

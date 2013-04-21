@@ -1,1 +1,3 @@
-/build
+/obj
+*.o
+/git-recent
