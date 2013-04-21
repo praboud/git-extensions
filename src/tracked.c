@@ -142,7 +142,6 @@ int tracked_path_map(git_repository *repo, git_commit *commit,
 
         // lookup the corresponding git_tree_element
         segment = (*r)->name_segment;
-        printf("checking %s\n", segment);
 
         if (git_tree_v) {
             entry = git_tree_entry_byname(git_tree_v, segment);
@@ -177,7 +176,9 @@ int tracked_path_map(git_repository *repo, git_commit *commit,
             if (subtree) {
                 git_tree_free(subtree);
             }
-        } else {
+        }
+
+        if ((*r)->followed) {
             (*r)->commit_found = f((*r), entry, commit);
         }
 
