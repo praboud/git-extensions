@@ -34,7 +34,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
 #define MAX_REPO_PATH_LEN 128
-#define MAX_HEX_LEN (40 + 1)
 
 /*
  * DEBUGGING
@@ -61,7 +60,7 @@ int set_initial_oid(tracked_path *p, const git_tree_entry *e,
         p->in_source_control = 1;
         p->commit_found = p->commit_found_for_children = 0;
         p->oid = *git_tree_entry_id(e);
-        p->modifying_commit = *git_commit_id(commit);
+        tracked_path_set_modifying_commit(p, commit);
         git_oid_array_add_parents(commit, &p->commit_queue,
                                   &p->commit_queue_length);
         if (p->filled == 0) p->commit_found_for_children = 1;
@@ -87,18 +86,18 @@ int compare_to_past(tracked_path *p, const git_tree_entry *e,
                     git_commit *commit) {
     const git_oid *commit_oid = git_commit_id(commit);
     //printf("comparing path segment %s\n", p->name_segment);
-    if (strcmp("upgrade", p->name_segment) == 0) {
+    /*if (strcmp("upgrade", p->name_segment) == 0) {
         printf("%s hex is ", p->name_segment);
         git_oid_print(git_tree_entry_id(e));
         printf("most current is ");
         git_oid_print(&p->oid);
-    }
+    }*/
     if (!git_oid_array_elem(commit_oid, p->commit_queue,
                             p->commit_queue_length)) {
-        printf("unrecognized commit %s\n", p->name_segment);
+        //printf("unrecognized commit %s\n", p->name_segment);
         return UNRECOGNIZED;
     } else if (e && git_oid_cmp(&p->oid, git_tree_entry_id(e)) == 0) {
-        printf("hex matches at %s\n", p->name_segment);
+        //printf("hex matches at %s\n", p->name_segment);
         // file matches what it used to
         git_oid_array_add_parents(commit, &p->commit_queue,
                                   &p->commit_queue_length);
@@ -109,10 +108,10 @@ int compare_to_past(tracked_path *p, const git_tree_entry *e,
         // where we have found the modifying commit in order to determine if
         // the contents of the directory have changed, and if we should look at them
         // item by item
-        if (!p->commit_found) p->modifying_commit = *commit_oid;
+        if (!p->commit_found) tracked_path_set_modifying_commit(p, commit);
         return NO_CHANGES_FOUND;
     } else {
-        printf("hex differs %s\n", p->name_segment);
+        //printf("hex differs %s\n", p->name_segment);
         git_oid_array_remove(commit_oid, p->commit_queue,
                              &(p->commit_queue_length));
         p->commit_found = p->commit_queue_length == 0;
@@ -277,18 +276,18 @@ int mod_commits_internal(tracked_path **out, char **paths, int path_count) {
     if (git_revwalk_next(&oid, history) == 0) {
         map_helper(repo, oid, file_tree, &set_initial_oid);
 
-        int commit_count = 0;
+        //int commit_count = 0;
         while (git_revwalk_next(&oid, history) == 0) {
-            printf("checking commit ");
+            /*printf("checking commit ");
             git_oid_print(&oid);
             commit_count++;
             //tracked_path_map(file_tree, &trace);
-            printf("\n");
+            printf("\n");*/
             if(map_helper(repo, oid, file_tree, &compare_to_past)) {
                 break;
             }
         }
-        printf("checked %d commits\n", commit_count);
+        //printf("checked %d commits\n", commit_count);
     }
 
     *out = file_tree;
@@ -308,26 +307,19 @@ int main(int argc, char *argv[]) {
     tracked_path **tracked;
     tracked_path *tree;
     int i;
-    char hex[MAX_HEX_LEN];
     int path_count;
-    hex[MAX_HEX_LEN - 1] = '\0';
 
     path_count = mod_commits_internal(&tree, argv+1, argc-1);
 
     tracked = malloc(path_count * sizeof(tracked_path*));
     tracked_path_followed_array(tree, tracked);
 
-    //printf("%d tracked paths\n", path_count);
+    qsort(tracked, path_count, sizeof(tracked_path*), tracked_path_compare);
 
     for (i = 0; i < path_count; i++) {
-        if (tracked[i]->in_source_control) {
-            git_oid_fmt(hex, &tracked[i]->modifying_commit);
-        } else {
-            strcpy(hex, "untracked");
-        }
-        printf("%s %s\n", tracked[i]->name_full, hex);
-        //tracked_path_free(tracked[i]);
+        tracked_path_print(tracked[i]);
     }
+
     tracked_path_free(tree);
     free(tracked);
     return 0;

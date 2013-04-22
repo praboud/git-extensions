@@ -1,6 +1,10 @@
 #ifndef __TRACKED_H__
 #define __TRACKED_H__
 
+#include <git2.h>
+
+#define MAX_HEX_LEN (40 + 1)
+
 #define CHANGES_FOUND 0
 #define NO_CHANGES_FOUND 1
 #define UNRECOGNIZED 2
@@ -15,6 +19,7 @@ struct tracked_path_t {
 
     git_oid oid;
     git_oid modifying_commit; // (only a candidate if commit found is unset)
+    git_time modification_time;
     git_oid *commit_queue;
     int commit_queue_length;
 
@@ -39,6 +44,9 @@ int tracked_path_git_map(git_repository *repo, git_commit *commit,
 
 void tracked_path_followed_array(tracked_path *tree, tracked_path **out);
 void tracked_path_add_name_full(tracked_path *p, char *name);
+void tracked_path_set_modifying_commit(tracked_path *p, git_commit *c);
+void tracked_path_print(tracked_path *p);
+int tracked_path_compare(const void *a, const void *b);
 
 // ONLY FOR DEBUGGING
 void tracked_path_map(tracked_path* p, void (*f)(tracked_path*));

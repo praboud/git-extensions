@@ -1,10 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <git2.h>
+#include <time.h>
 
 #include "tracked.h"
 #include "oid-array.h"
+
+/* constants only used by tracked.c */
+#define TIME_STR_MAX_LENGTH 80
+
 
 // globals used by function pointers called with tracked_path_map
 // required because C has no closures
@@ -270,4 +274,42 @@ void followed_array_mapper(tracked_path *tree) {
 void tracked_path_followed_array(tracked_path *tree, tracked_path **out) {
     followed_array_global = out;
     tracked_path_map(tree, &followed_array_mapper);
+}
+
+void tracked_path_set_modifying_commit(tracked_path *p, git_commit *commit) {
+    const git_signature *author = git_commit_author(commit);
+    p->modifying_commit = *git_commit_id(commit);
+    p->modification_time = author->when;
+}
+
+void tracked_path_print(tracked_path *p) {
+    char hex[MAX_HEX_LEN];
+    char time_str[TIME_STR_MAX_LENGTH];
+
+    hex[MAX_HEX_LEN - 1] = '\0';
+
+    if (p->in_source_control) {
+        git_oid_fmt(hex, &p->modifying_commit);
+        git_time mod_time = p->modification_time;
+        git_time_t timestamp = mod_time.time + 60 * mod_time.offset;
+        strftime(time_str, TIME_STR_MAX_LENGTH, "%c", gmtime(&timestamp));
+        int offset = mod_time.offset % 60 + (mod_time.offset / 60) * 100;
+        printf("%s %s %s %+.4d\n", p->name_full, hex, time_str, offset);
+    } else {
+        printf("%s untracked\n", p->name_full);
+    }
+}
+
+int tracked_path_compare(const void *a, const void *b) {
+    const tracked_path *ap, *bp;
+    ap = *(tracked_path**)a;
+    bp = *(tracked_path**)b;
+    git_time_t at, bt;
+    if (!ap->in_source_control) return 1;
+    else if (!bp->in_source_control) return -1;
+    else {
+        at = ap->modification_time.time + 60 * ap->modification_time.offset;
+        bt = bp->modification_time.time + 60 * bp->modification_time.offset;
+        return bt - at;
+    }
 }
