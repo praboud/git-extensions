@@ -52,7 +52,7 @@ void git_oid_array_add_parents(git_commit *commit, git_oid **array, int *n) {
     free(*array);
     *array = malloc(parent_count * sizeof(git_oid));
     for (i = 0; i < parent_count; i++) {
-        (*array)[i] = *git_commit_parent_oid(commit, i);
+        (*array)[i] = *git_commit_parent_id(commit, i);
     }
     *n = parent_count;
 }
