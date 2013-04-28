@@ -258,17 +258,10 @@ int tracked_path_git_map(git_repository *repo, git_commit *commit,
             // don't need the tree (and only need the hex of the tree)
             git_tree *subtree;
             if (entry) {
-                git_object *obj;
-                if (git_tree_entry_to_object(&obj, repo, entry)) {
+                if (git_tree_lookup(&subtree, repo,
+                                    git_tree_entry_id(entry))) {
                     printf("fatal: Could not lookup object\n");
                     exit(1);
-                }
-                if (git_object_type(obj) == GIT_OBJ_TREE) {
-                    subtree = (git_tree*) obj;
-                    obj = NULL;
-                } else {
-                    subtree = NULL;
-                    git_object_free(obj);
                 }
             } else {
                 subtree = NULL;
