@@ -25,6 +25,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include "tracked.h"
 #include "oid-array.h"
+#include "git-recent.h"
 
 /* constants only used by tracked.c */
 #define TIME_STR_MAX_LENGTH 80

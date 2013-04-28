@@ -18,6 +18,9 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
+/* needed to use strptime */
+#define _XOPEN_SOURCE 600
+
 #include <git2.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +28,11 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <sys/types.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <argp.h>
 
+#include <time.h>
+
+#include "git-recent.h"
 #include "tracked.h"
 #include "oid-array.h"
 
@@ -36,26 +43,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #define MAX_REPO_PATH_LEN 128
 
 /*
- * DEBUGGING
- */
-
-void git_oid_print(const git_oid *oid) {
-    if (oid) {
-        char hex[MAX_HEX_LEN];
-        git_oid_fmt(hex, oid);
-        hex[MAX_HEX_LEN - 1] = '\0';
-        printf("%s\n", hex);
-    } else {
-        printf("deleted\n");
-    }
-}
-
-/*
  * CALLBACKS FOR FILE TREE MAP
  */
 int set_initial_oid(tracked_path *p, const git_tree_entry *e,
                     git_commit *commit) {
-    //printf("doing initial check on %s\n", p->name_full);
     if (e) {
         p->in_source_control = 1;
         p->commit_found = p->commit_found_for_children = 0;
@@ -300,16 +291,94 @@ int mod_commits_internal(tracked_path **out, char **paths, int path_count) {
 }
 
 /*
+ * Argument parsing
+ */
+
+const char *argp_program_version = "git-recent 0.2";
+const char *argp_program_bug_address = "<praboud@gmail.com>";
+
+/* Program documentation. */
+static char argp_doc[] =
+"git-recent - list files in source control by last modification date";
+
+/* A description of the arguments we accept. */
+static char argp_args_doc[] = "[PATH ...]";
+
+static struct argp_option argp_optspec[] = {
+    {"author", 'a', 0, 0, "Order by author date", 0},
+    {"commit", 'c', 0, 0, "Order by commit date", 0},
+    {"after", 'A', "TIME", 0, "Ignore commits whose author date is before <TIME>", 0},
+    //{"after-author", 'A', "TIME", OPTION_ALIAS, "Ignore changes made before <TIME>", 0},
+    {"after-commit", 'C', "TIME", 0, "Ignore commits whose commit date is before <TIME>", 0},
+    {0}
+};
+
+int argp_parse_date(char *arg, git_time_t *time) {
+    struct tm t;
+    char *success;
+    // try multiple formatting options
+    if ((success = strptime(arg, "%Y-%m-%d %H-%m-%S", &t))){}
+    else if ((success = strptime(arg, "%Y-%m-%d", &t))){}
+
+    if (success) {
+        *time = mktime(&t);
+        return 0;
+    } else {
+        return ARGP_ERR_UNKNOWN;
+    }
+}
+
+static error_t argp_parse_callback(int key, char *arg, struct argp_state *state) {
+    git_recent_opts *a = state->input;
+    switch (key) {
+    case 'a':
+        a->time_type = AUTHOR_TIME;
+        break;
+    case 'c':
+        a->time_type = COMMIT_TIME;
+        break;
+    case 'A':
+        return argp_parse_date(arg, &a->author_time_cutoff);
+    case 'C':
+        return argp_parse_date(arg, &a->commit_time_cutoff);
+    case ARGP_KEY_ARGS:
+        a->argv = state->argv + state->next;
+        a->argc = state->argc - state->next;
+        break;
+    default:
+        return ARGP_ERR_UNKNOWN;
+    }
+    return 0;
+}
+
+static struct argp argp = { argp_optspec, argp_parse_callback, argp_doc, argp_args_doc, 0, 0, 0 };
+
+void git_recent_opts_default(git_recent_opts *opts) {
+    opts->commit_time_cutoff = 0;
+    opts->author_time_cutoff = 0;
+    opts->commit_count_cutoff = 0;
+    opts->time_type = AUTHOR_TIME;
+    opts->argv = NULL;
+    opts->argc = 0;
+}
+
+
+/*
  * MAIN: DEAL WITH IO
  */
 
 int main(int argc, char *argv[]) {
     tracked_path **tracked;
     tracked_path *tree;
+
+    git_recent_opts opts;
+    git_recent_opts_default(&opts);
+    argp_parse(&argp, argc, argv, 0, 0, &opts);
+
     int i;
     int path_count;
 
-    path_count = mod_commits_internal(&tree, argv+1, argc-1);
+    path_count = mod_commits_internal(&tree, opts.argv, opts.argc);
 
     tracked = malloc(path_count * sizeof(tracked_path*));
     tracked_path_followed_array(tree, tracked);

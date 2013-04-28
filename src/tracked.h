@@ -23,8 +23,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include <git2.h>
 
-#define MAX_HEX_LEN (40 + 1)
-
 #define CHANGES_FOUND 0
 #define NO_CHANGES_FOUND 1
 #define UNRECOGNIZED 2

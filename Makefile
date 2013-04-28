@@ -1,7 +1,7 @@
 PREFIX=/usr/local
 
 CC=gcc
-CFLAGS=-g -O2 -lgit2 -W -Wall # -pedantic
+CFLAGS=-O2 -lgit2 -W -Wall # -pedantic
 
 all: prepare-build git-recent
 
