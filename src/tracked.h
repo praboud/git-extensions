@@ -67,7 +67,7 @@ void tracked_path_print(tracked_path *p);
 int tracked_path_compare(const void *a, const void *b);
 
 // ONLY FOR DEBUGGING
-void tracked_path_map(tracked_path* p, void (*f)(tracked_path*));
+void tracked_path_map(tracked_path* p, void (*f)(tracked_path*, void *), void *arg);
 void trace(tracked_path *p);
 
 #endif

@@ -31,11 +31,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #define TIME_STR_MAX_LENGTH 80
 
 
-// globals used by function pointers called with tracked_path_map
-// required because C has no closures
-tracked_path **followed_array_global = NULL;
-git_commit *modifying_commit_global;
-
 /* structure for internal use */
 struct tracked_path_walker {
     tracked_path **children;
@@ -48,13 +43,13 @@ struct tracked_path_walker {
 
 // apply a function pointer onto every element of a tree
 // the function pointer must do all work with side effects
-void tracked_path_map(tracked_path* p, void (*f)(tracked_path*)) {
+void tracked_path_map(tracked_path* p, void (*f)(tracked_path*, void *), void *arg) {
     struct tracked_path_walker *q, *t;
 
     q = NULL;
 
     while (p) {
-        f(p);
+        f(p, arg);
         if (p->filled) {
             if (p->filled > 1) {
                 t = malloc(sizeof(struct tracked_path_walker));
@@ -185,10 +180,12 @@ void tracked_path_free(tracked_path *t) {
     }
 }
 
-void modifying_commit_mapper(tracked_path *p) {
+void modifying_commit_mapper(tracked_path *p, void *modifying_commit_v) {
+    git_commit *modifying_commit = (git_commit*) modifying_commit_v;
+
     if (p->in_source_control && !p->commit_found) {
-        p->modifying_commit = *git_commit_id(modifying_commit_global);
-        git_oid_array_add_parents(modifying_commit_global, &p->commit_queue,
+        p->modifying_commit = *git_commit_id(modifying_commit);
+        git_oid_array_add_parents(modifying_commit, &p->commit_queue,
                                   &p->commit_queue_length);
     }
 }
@@ -248,8 +245,7 @@ int tracked_path_git_map(git_repository *repo, git_commit *commit,
         skip = f(p, entry, commit);
         if (skip == NO_CHANGES_FOUND && p->filled != 0) {
             printf("aborting descent at %s\n", p->name_segment);
-            modifying_commit_global = commit;
-            tracked_path_map(p, &modifying_commit_mapper);
+            tracked_path_map(p, &modifying_commit_mapper, commit);
         }
 
         if (!skip && !p->commit_found_for_children) {
@@ -281,13 +277,13 @@ int tracked_path_git_map(git_repository *repo, git_commit *commit,
     return all_commits_found;
 }
 
-void followed_array_mapper(tracked_path *tree) {
-    if (tree->followed) *followed_array_global++ = tree;
+void followed_array_mapper(tracked_path *tree, void *followed_array_v) {
+    tracked_path ***followed_array = (tracked_path***) followed_array_v;
+    if (tree->followed) *(*followed_array)++ = tree;
 }
 
 void tracked_path_followed_array(tracked_path *tree, tracked_path **out) {
-    followed_array_global = out;
-    tracked_path_map(tree, &followed_array_mapper);
+    tracked_path_map(tree, &followed_array_mapper, &out);
 }
 
 void tracked_path_set_modifying_commit(tracked_path *p, git_commit *commit) {
