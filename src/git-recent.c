@@ -46,12 +46,12 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  * CALLBACKS FOR FILE TREE MAP
  */
 int set_initial_oid(tracked_path *p, const git_tree_entry *e,
-                    git_commit *commit) {
+                    git_commit *commit, git_recent_opts *opts) {
     if (e) {
         p->in_source_control = 1;
         p->commit_found = p->commit_found_for_children = 0;
         p->oid = *git_tree_entry_id(e);
-        tracked_path_set_modifying_commit(p, commit);
+        tracked_path_set_modifying_commit(p, commit, opts);
         git_oid_array_add_parents(commit, &p->commit_queue,
                                   &p->commit_queue_length);
         if (p->filled == 0) p->commit_found_for_children = 1;
@@ -62,33 +62,14 @@ int set_initial_oid(tracked_path *p, const git_tree_entry *e,
     return p->commit_found;
 }
 
-/*
-int echo(tracked_path *p, const git_tree_entry *e, git_commit *c) {
-        const git_oid *oid = &(p->modifying_commit);
-        char hex[MAX_HEX_LEN];
-        git_oid_fmt(hex, oid);
-        hex[MAX_HEX_LEN-1] = '\0';
-        printf("%s\n", hex);
-    return 0;
-}
-*/
 
 int compare_to_past(tracked_path *p, const git_tree_entry *e,
-                    git_commit *commit) {
+                    git_commit *commit, git_recent_opts *opts) {
     const git_oid *commit_oid = git_commit_id(commit);
-    //printf("comparing path segment %s\n", p->name_segment);
-    /*if (strcmp("upgrade", p->name_segment) == 0) {
-        printf("%s hex is ", p->name_segment);
-        git_oid_print(git_tree_entry_id(e));
-        printf("most current is ");
-        git_oid_print(&p->oid);
-    }*/
     if (!git_oid_array_elem(commit_oid, p->commit_queue,
                             p->commit_queue_length)) {
-        //printf("unrecognized commit %s\n", p->name_segment);
         return UNRECOGNIZED;
     } else if (e && git_oid_cmp(&p->oid, git_tree_entry_id(e)) == 0) {
-        //printf("hex matches at %s\n", p->name_segment);
         // file matches what it used to
         git_oid_array_add_parents(commit, &p->commit_queue,
                                   &p->commit_queue_length);
@@ -99,10 +80,9 @@ int compare_to_past(tracked_path *p, const git_tree_entry *e,
         // where we have found the modifying commit in order to determine if
         // the contents of the directory have changed, and if we should look at them
         // item by item
-        if (!p->commit_found) tracked_path_set_modifying_commit(p, commit);
+        if (!p->commit_found) tracked_path_set_modifying_commit(p, commit, opts);
         return NO_CHANGES_FOUND;
     } else {
-        //printf("hex differs %s\n", p->name_segment);
         git_oid_array_remove(commit_oid, p->commit_queue,
                              &(p->commit_queue_length));
         p->commit_found = p->commit_queue_length == 0;
@@ -116,25 +96,46 @@ int compare_to_past(tracked_path *p, const git_tree_entry *e,
  * FILE TREE MAPPING
  */
 
-
-int map_helper(git_repository *repo, git_oid oid,
+int git_recent_map(git_repository *repo, git_oid oid,
                 tracked_path *file_tree,
                 int (*f)(tracked_path*, const git_tree_entry*,
-                         git_commit*)) {
+                         git_commit*, git_recent_opts*),
+                unsigned int commit_count, git_recent_opts *opts) {
 
     git_commit *commit;
     git_tree *tree;
+    const git_signature *sig;
+    git_time_t cutoff = 0;
     int done;
+    if (opts->commit_count_cutoff && commit_count > opts->commit_count_cutoff) {
+        /* we have no meaningful date to set here */
+        return 1;
+    }
     int err = git_commit_lookup(&commit, repo, &oid);
     if (err) {
         printf("fatal: Bad ref while revwalking\n");
         exit(1);
     }
+    if (opts->author_time_cutoff) {
+        sig = git_commit_author(commit);
+        if (sig->when.time < opts->author_time_cutoff) {
+            tracked_path_map_date_cutoff(file_tree, opts->author_time_cutoff);
+            return 1;
+        }
+    }
+    if (!cutoff && opts->commit_time_cutoff) {
+        sig = git_commit_committer(commit);
+        if (sig->when.time < opts->commit_time_cutoff) {
+            tracked_path_map_date_cutoff(file_tree, opts->commit_time_cutoff);
+            return 1;
+        }
+    }
+
     err = git_commit_tree(&tree, commit);
     if (err) {
         printf("fatal: Bad tree while revwalking\n");
     }
-    done = tracked_path_git_map(repo, commit, file_tree, tree, f);
+    done = tracked_path_git_map(repo, commit, file_tree, tree, f, opts);
     git_tree_free(tree);
     git_commit_free(commit);
     return done;
@@ -182,11 +183,12 @@ tracked_path* tracked_path_add_path(char *file_path, char *repo_path, char *cwd,
 }
 
 
-int mod_commits_internal(tracked_path **out, char **paths, int path_count) {
+int git_recent_find_modifying_commits(tracked_path **out, git_recent_opts *opts) {
     int i;
     int err;
     char repo_path [MAX_REPO_PATH_LEN];
     char cwd[PATH_MAX];
+    int path_count = opts->argc;
 
     tracked_path *file_tree;
     tracked_path *t;
@@ -221,12 +223,12 @@ int mod_commits_internal(tracked_path **out, char **paths, int path_count) {
     if (path_count) {
         for (i = 0; i < path_count; i++) {
             t = tracked_path_add_path(
-                paths[i],
+                opts->argv[i],
                 repo_path,
                 cwd,
                 file_tree
             );
-            tracked_path_add_name_full(t, paths[i]);
+            tracked_path_add_name_full(t, opts->argv[i]);
         }
     } else {
         DIR *d;
@@ -258,6 +260,9 @@ int mod_commits_internal(tracked_path **out, char **paths, int path_count) {
     git_revwalk *history;
     git_oid oid;
 
+    /* we count from one in this case, because the argument is taken as such */
+    unsigned int commit_count = 1;
+
     //get_current_git_repository(&repo);
 
     git_revwalk_new(&history, repo);
@@ -265,20 +270,16 @@ int mod_commits_internal(tracked_path **out, char **paths, int path_count) {
     git_revwalk_push_head(history);
 
     if (git_revwalk_next(&oid, history) == 0) {
-        map_helper(repo, oid, file_tree, &set_initial_oid);
-
-        //int commit_count = 0;
+        git_recent_map(repo, oid, file_tree, &set_initial_oid, commit_count,
+                       opts);
+        commit_count++;
         while (git_revwalk_next(&oid, history) == 0) {
-            /*printf("checking commit ");
-            git_oid_print(&oid);
-            commit_count++;
-            //tracked_path_map(file_tree, &trace);
-            printf("\n");*/
-            if(map_helper(repo, oid, file_tree, &compare_to_past)) {
+            if(git_recent_map(repo, oid, file_tree, &compare_to_past,
+                              commit_count, opts)) {
                 break;
             }
+            commit_count++;
         }
-        //printf("checked %d commits\n", commit_count);
     }
 
     *out = file_tree;
@@ -310,12 +311,14 @@ static struct argp_option argp_optspec[] = {
     {"after", 'A', "TIME", 0, "Ignore commits whose author date is before <TIME>", 0},
     //{"after-author", 'A', "TIME", OPTION_ALIAS, "Ignore changes made before <TIME>", 0},
     {"after-commit", 'C', "TIME", 0, "Ignore commits whose commit date is before <TIME>", 0},
+    {"commits-ago", 'g', "N", 0, "Ignore commits more than <N> commits ago", 0},
     {0}
 };
 
 int argp_parse_date(char *arg, git_time_t *time) {
     struct tm t;
     char *success;
+    memset(&t, 0, sizeof(struct tm));
     // try multiple formatting options
     if ((success = strptime(arg, "%Y-%m-%d %H-%m-%S", &t))){}
     else if ((success = strptime(arg, "%Y-%m-%d", &t))){}
@@ -341,6 +344,9 @@ static error_t argp_parse_callback(int key, char *arg, struct argp_state *state)
         return argp_parse_date(arg, &a->author_time_cutoff);
     case 'C':
         return argp_parse_date(arg, &a->commit_time_cutoff);
+    case 'g':
+        a->commit_count_cutoff = atoi(arg);
+        break;
     case ARGP_KEY_ARGS:
         a->argv = state->argv + state->next;
         a->argc = state->argc - state->next;
@@ -374,11 +380,13 @@ int main(int argc, char *argv[]) {
     git_recent_opts opts;
     git_recent_opts_default(&opts);
     argp_parse(&argp, argc, argv, 0, 0, &opts);
+    printf("%d files passed\n", opts.argc);
 
     int i;
     int path_count;
 
-    path_count = mod_commits_internal(&tree, opts.argv, opts.argc);
+    path_count = git_recent_find_modifying_commits(&tree, &opts);
+    printf("%d files listed\n", path_count);
 
     tracked = malloc(path_count * sizeof(tracked_path*));
     tracked_path_followed_array(tree, tracked);

@@ -213,8 +213,8 @@ void trace(tracked_path *p) {
 int tracked_path_git_map(git_repository *repo, git_commit *commit,
                          tracked_path *file_tree, git_tree *git_tree_v,
                          int (*f)(tracked_path*, const git_tree_entry*,
-                                  git_commit*)
-                         ) {
+                                  git_commit*, git_recent_opts*),
+                         git_recent_opts *opts) {
 
     tracked_path *p;
     int all_commits_found = 1;
@@ -242,7 +242,7 @@ int tracked_path_git_map(git_repository *repo, git_commit *commit,
         // apply callback, which does some work via side effects to the
         // tracked_path, and also tells us whether to descend into its
         // children
-        skip = f(p, entry, commit);
+        skip = f(p, entry, commit, opts);
         if (skip == NO_CHANGES_FOUND && p->filled != 0) {
             printf("aborting descent at %s\n", p->name_segment);
             tracked_path_map(p, &modifying_commit_mapper, commit);
@@ -263,7 +263,7 @@ int tracked_path_git_map(git_repository *repo, git_commit *commit,
             } else {
                 subtree = NULL;
             }
-            tracked_path_git_map(repo, commit, p, subtree, f);
+            tracked_path_git_map(repo, commit, p, subtree, f, opts);
             if (subtree) {
                 git_tree_free(subtree);
             }
@@ -286,10 +286,16 @@ void tracked_path_followed_array(tracked_path *tree, tracked_path **out) {
     tracked_path_map(tree, &followed_array_mapper, &out);
 }
 
-void tracked_path_set_modifying_commit(tracked_path *p, git_commit *commit) {
-    const git_signature *author = git_commit_author(commit);
+void tracked_path_set_modifying_commit(tracked_path *p, git_commit *commit,
+                                       git_recent_opts *opts) {
+    const git_signature *s;
     p->modifying_commit = *git_commit_id(commit);
-    p->modification_time = author->when;
+    if (opts->time_type == AUTHOR_TIME) {
+        s = git_commit_author(commit);
+    } else {
+        s = git_commit_committer(commit);
+    }
+    p->modification_time = s->when;
 }
 
 void tracked_path_print(tracked_path *p) {
@@ -304,7 +310,11 @@ void tracked_path_print(tracked_path *p) {
         git_time_t timestamp = mod_time.time + 60 * mod_time.offset;
         strftime(time_str, TIME_STR_MAX_LENGTH, "%c", gmtime(&timestamp));
         int offset = mod_time.offset % 60 + (mod_time.offset / 60) * 100;
-        printf("%s %s %s %+.4d\n", p->name_full, hex, time_str, offset);
+        if (p->commit_found) {
+            printf("%s %s %s %+.4d\n", p->name_full, hex, time_str, offset);
+        } else {
+            printf("%s %s before %s %+.4d\n", p->name_full, hex, time_str, offset);
+        }
     } else {
         printf("%s untracked\n", p->name_full);
     }
@@ -322,4 +332,15 @@ int tracked_path_compare(const void *a, const void *b) {
         bt = bp->modification_time.time + 60 * bp->modification_time.offset;
         return bt - at;
     }
+}
+
+void tracked_path_map_date_cutoff_mapper(tracked_path *p, void *date_v) {
+    if (!p->commit_found) {
+        p->modification_time.time = *(git_time_t*) date_v;
+        p->modification_time.offset = 0;
+    }
+}
+
+void tracked_path_map_date_cutoff(tracked_path *file_tree, git_time_t date) {
+    tracked_path_map(file_tree, tracked_path_map_date_cutoff_mapper, &date);
 }
