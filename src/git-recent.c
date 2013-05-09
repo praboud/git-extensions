@@ -96,11 +96,11 @@ int compare_to_past(tracked_path *p, const git_tree_entry *e,
  * FILE TREE MAPPING
  */
 
-int git_recent_map(git_repository *repo, git_oid oid,
-                tracked_path *file_tree,
-                int (*f)(tracked_path*, const git_tree_entry*,
-                         git_commit*, git_recent_opts*),
-                unsigned int commit_count, git_recent_opts *opts) {
+int map_over_commit(git_repository *repo, git_oid oid,
+                    tracked_path *file_tree,
+                    int (*f)(tracked_path*, const git_tree_entry*,
+                             git_commit*, git_recent_opts*),
+                    unsigned int commit_count, git_recent_opts *opts) {
 
     git_commit *commit;
     git_tree *tree;
@@ -146,44 +146,30 @@ int git_recent_map(git_repository *repo, git_oid oid,
  */
 
 /*
- * assumed that both paths are absolute
+ * Takes a path relative to the current directory, works out the path relative
+ * to the git repo, and adds it to the tree of paths to be tracked
  */
-char * relpath(char *refpoint, char *path, char *buf) {
-    while (*refpoint && *refpoint++ == *path++);
-    if (!*refpoint) {
-        strcpy(buf, path);
-        return buf;
-    } else {
-        return NULL;
-    }
-}
-
-tracked_path* tracked_path_add_path(char *file_path, char *repo_path, char *cwd,
-                        tracked_path *file_tree) {
-    char buf[PATH_MAX];
+tracked_path* track_rel_path(char *file_path, char *repo_path,
+                             char *cwd, tracked_path *file_tree) {
     char real_path_buf[PATH_MAX];
     char *real_path = real_path_buf;
 
-    strcpy(buf, cwd);
-    strcat(buf, "/");
-    strcat(buf, file_path);
-    //printf("buf: %s\n", buf);
-    if (!realpath(buf, real_path)) {
-        printf("fatal: Could not get real path\n");
-        exit(1);
-    }
-    //printf("tracking path %s\n", real_path);
+    /* get path relative to root */
+    strcpy(real_path, cwd);
+    strcat(real_path, "/");
+    strcat(real_path, file_path);
+    /* get path relative to git-repo */
     while (*real_path && *real_path == *repo_path) {
         real_path++;
         repo_path++;
     }
-    //printf("tracking: %s\n", real_path);
-
+    /* insert it into tree */
     return tracked_path_insert(file_tree, real_path);
 }
 
 
-int git_recent_find_modifying_commits(tracked_path **out, git_recent_opts *opts) {
+int find_modifying_commits(tracked_path **out,
+                                      git_recent_opts *opts) {
     int i;
     int err;
     char repo_path [MAX_REPO_PATH_LEN];
@@ -222,7 +208,7 @@ int git_recent_find_modifying_commits(tracked_path **out, git_recent_opts *opts)
     // setup file tree
     if (path_count) {
         for (i = 0; i < path_count; i++) {
-            t = tracked_path_add_path(
+            t = track_rel_path(
                 opts->argv[i],
                 repo_path,
                 cwd,
@@ -237,7 +223,7 @@ int git_recent_find_modifying_commits(tracked_path **out, git_recent_opts *opts)
         if (d) {
             while ((de = readdir(d))) {
                 if (de->d_name[0] != '.') {
-                    t = tracked_path_add_path(
+                    t = track_rel_path(
                         de->d_name,
                         repo_path,
                         cwd,
@@ -270,11 +256,11 @@ int git_recent_find_modifying_commits(tracked_path **out, git_recent_opts *opts)
     git_revwalk_push_head(history);
 
     if (git_revwalk_next(&oid, history) == 0) {
-        git_recent_map(repo, oid, file_tree, &set_initial_oid, commit_count,
+        map_over_commit(repo, oid, file_tree, &set_initial_oid, commit_count,
                        opts);
         commit_count++;
         while (git_revwalk_next(&oid, history) == 0) {
-            if(git_recent_map(repo, oid, file_tree, &compare_to_past,
+            if(map_over_commit(repo, oid, file_tree, &compare_to_past,
                               commit_count, opts)) {
                 break;
             }
@@ -385,7 +371,7 @@ int main(int argc, char *argv[]) {
     int i;
     int path_count;
 
-    path_count = git_recent_find_modifying_commits(&tree, &opts);
+    path_count = find_modifying_commits(&tree, &opts);
     printf("%d files listed\n", path_count);
 
     tracked = malloc(path_count * sizeof(tracked_path*));
