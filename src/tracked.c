@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <assert.h>
 
 #include "tracked.h"
 #include "oid-array.h"
@@ -298,9 +299,14 @@ void tracked_path_set_modifying_commit(tracked_path *p, git_commit *commit,
     p->modification_time = s->when;
 }
 
-void tracked_path_print(tracked_path *p) {
+/*
+ * provide a string representation of the tracked path, with the 
+ * given options
+ */
+void tracked_path_print(char *str, tracked_path *p, git_recent_opts *opts) {
     char hex[MAX_HEX_LEN];
     char time_str[TIME_STR_MAX_LENGTH];
+    int i;
 
     hex[MAX_HEX_LEN - 1] = '\0';
 
@@ -311,13 +317,16 @@ void tracked_path_print(tracked_path *p) {
         strftime(time_str, TIME_STR_MAX_LENGTH, "%c", gmtime(&timestamp));
         int offset = mod_time.offset % 60 + (mod_time.offset / 60) * 100;
         if (p->commit_found) {
-            printf("%s %s %s %+.4d\n", p->name_full, hex, time_str, offset);
+            i = sprintf(str, "%s\t%s\t%s %+.4d\t", p->name_full, hex,
+                    time_str, offset);
         } else {
-            printf("%s %s before %s %+.4d\n", p->name_full, hex, time_str, offset);
+            i = sprintf(str, "%s\t%s\tbefore %s %+.4d\t", p->name_full, hex,
+                   time_str, offset);
         }
     } else {
-        printf("%s untracked\n", p->name_full);
+        i = sprintf(str, "%s untracked\t\t\t", p->name_full);
     }
+    assert(i < MAX_OUTPUT_LINE_LEN);
 }
 
 int tracked_path_compare(const void *a, const void *b) {

@@ -28,6 +28,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #define NO_CHANGES_FOUND 1
 #define UNRECOGNIZED 2
 
+#define MAX_OUTPUT_LINE_LEN 128
+#define NUM_COLS_OUTPUT 3
+
 struct tracked_path_t {
     char *name_segment;
     char *name_full;
@@ -66,7 +69,7 @@ void tracked_path_add_name_full(tracked_path *p, char *name);
 void tracked_path_set_modifying_commit(tracked_path *p, git_commit *c,
                                        git_recent_opts *);
 void tracked_path_map_date_cutoff(tracked_path *p, git_time_t date);
-void tracked_path_print(tracked_path *p);
+void tracked_path_print(char *str, tracked_path *p, git_recent_opts *opts);
 int tracked_path_compare(const void *a, const void *b);
 
 // ONLY FOR DEBUGGING

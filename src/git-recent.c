@@ -29,6 +29,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <dirent.h>
 #include <unistd.h>
 #include <argp.h>
+#include <assert.h>
 
 #include <time.h>
 
@@ -41,6 +42,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
 #define MAX_REPO_PATH_LEN 128
+#define COL_PADDING "  "
 
 /*
  * CALLBACKS FOR FILE TREE MAP
@@ -355,6 +357,52 @@ void git_recent_opts_default(git_recent_opts *opts) {
 }
 
 
+void print_paths(tracked_path **tracked, int n, git_recent_opts *opts) {
+    /* allocate one big block of memory to contain many lines */
+    int size = n * MAX_OUTPUT_LINE_LEN;
+    char *buf = malloc(size * sizeof(char));
+    char *end = buf + size;
+    char *p, *q, *r;
+    char col_temp[MAX_OUTPUT_LINE_LEN];
+    int col_widths[NUM_COLS_OUTPUT];
+    int i;
+    for (p = buf; p < end; p += MAX_OUTPUT_LINE_LEN) {
+        tracked_path_print(p, *tracked++, opts);
+    }
+    memset(&col_widths, 0, sizeof(int) * NUM_COLS_OUTPUT);
+    for (q = buf; q < end; q += MAX_OUTPUT_LINE_LEN) {
+        p = q;
+        int count = 0;
+        i = 0;
+        for(; *p; p++) {
+            assert(i < NUM_COLS_OUTPUT);
+            assert(p < q + MAX_OUTPUT_LINE_LEN);
+            if (*p == '\t') {
+                if (col_widths[i] < count) {
+                    col_widths[i] = count;
+                }
+                i++;
+                count = 0;
+            } else {
+                count++;
+            }
+        }
+    }
+    for (q = buf; q < end; q += MAX_OUTPUT_LINE_LEN) {
+        p = q;
+        for (i = 0; i < NUM_COLS_OUTPUT; i++) {
+            r = col_temp;
+            while(*p != '\t') *r++ = *p++;
+            p++;
+            *r = '\0';
+            printf("%-*s" COL_PADDING, col_widths[i], col_temp);
+        }
+        printf("\n");
+    }
+    free(buf);
+}
+
+
 /*
  * MAIN: DEAL WITH IO
  */
@@ -366,22 +414,17 @@ int main(int argc, char *argv[]) {
     git_recent_opts opts;
     git_recent_opts_default(&opts);
     argp_parse(&argp, argc, argv, 0, 0, &opts);
-    printf("%d files passed\n", opts.argc);
 
-    int i;
     int path_count;
 
     path_count = find_modifying_commits(&tree, &opts);
-    printf("%d files listed\n", path_count);
 
     tracked = malloc(path_count * sizeof(tracked_path*));
     tracked_path_followed_array(tree, tracked);
 
     qsort(tracked, path_count, sizeof(tracked_path*), tracked_path_compare);
 
-    for (i = 0; i < path_count; i++) {
-        tracked_path_print(tracked[i]);
-    }
+    print_paths(tracked, path_count, &opts);
 
     tracked_path_free(tree);
     free(tracked);
